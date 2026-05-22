@@ -7,7 +7,7 @@ Pi extension that copies the current session JSONL to another working directory 
 From this repository:
 
 ```bash
-pi install git:github.com/samsquire/pi-relocate
+pi install git:github.com/ProbabilityEngineer/pi-relocate
 ```
 
 Or load locally while testing:
