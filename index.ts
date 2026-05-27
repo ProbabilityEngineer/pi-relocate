@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -26,6 +26,60 @@ function uniqueRelocatedName(originalFile: string): string {
 	const safeSessionId = originalSessionId.slice(0, 96);
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 	return `${safeSessionId}_relocated_${stamp}.jsonl`;
+}
+
+function manifestFile(): string {
+	return join(defaultAgentDir(), "relocations.jsonl");
+}
+
+type RelocationRecord = {
+	ts: string;
+	fromCwd: string;
+	toCwd: string;
+	sourceSession: string;
+	destinationSession: string;
+	parent: string;
+	replacements: number | null;
+	inferred?: boolean;
+	confidence?: string;
+};
+
+async function appendManifest(record: RelocationRecord): Promise<void> {
+	const path = manifestFile();
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "a" });
+}
+
+async function readManifest(): Promise<RelocationRecord[]> {
+	try {
+		const raw = await readFile(manifestFile(), "utf8");
+		return raw
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as RelocationRecord);
+	} catch {
+		return [];
+	}
+}
+
+async function findRelocatedSessions(root = join(defaultAgentDir(), "sessions")): Promise<string[]> {
+	const found: string[] = [];
+	async function walk(dir: string): Promise<void> {
+		let entries: import("node:fs").Dirent[];
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) await walk(path);
+			else if (entry.isFile() && entry.name.includes("_relocated_") && entry.name.endsWith(".jsonl")) found.push(path);
+		}
+	}
+	await walk(root);
+	return found.sort();
 }
 
 function replaceAllLiteral(input: string, from: string, to: string): string {
@@ -57,7 +111,7 @@ function parseArgs(args: string): { target?: string; force: boolean } {
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("relocate", {
 		description:
-			"Copy this session to another cwd by replacing old path strings; restart Pi there with --session. No LLM call.",
+			"Copy this session to another cwd by replacing old path strings; restart Pi there with --session. Records lineage in relocations.jsonl. No LLM call.",
 		handler: async (args, ctx) => {
 			const { target, force } = parseArgs(args);
 			if (!target) {
@@ -117,6 +171,15 @@ export default function (pi: ExtensionAPI) {
 
 			const destinationFile = join(destinationDir, uniqueRelocatedName(sessionFile));
 			await writeFile(destinationFile, relocated, { encoding: "utf8", flag: "wx" });
+			await appendManifest({
+				ts: new Date().toISOString(),
+				fromCwd: oldCwd,
+				toCwd: targetCwd,
+				sourceSession: sessionFile,
+				destinationSession: destinationFile,
+				parent: sessionFile,
+				replacements,
+			});
 
 			const command = `cd ${shellQuote(targetCwd)} && pi --session ${shellQuote(destinationFile)}`;
 			ctx.ui.notify(
@@ -129,6 +192,46 @@ export default function (pi: ExtensionAPI) {
 				].join("\n"),
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("relocate-status", {
+		description: "Show recorded relocation lineage and discovered relocated session files.",
+		handler: async (_args, ctx) => {
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			const records = await readManifest();
+			const discovered = await findRelocatedSessions();
+			const byDestination = new Map(records.map((record) => [record.destinationSession, record]));
+			const currentIndex = sessionFile ? records.findIndex((record) => record.destinationSession === sessionFile) : -1;
+			const lines = [
+				"Relocation status",
+				"",
+				`Current cwd: ${ctx.cwd}`,
+				`Current session: ${sessionFile ?? "(ephemeral)"}`,
+				`Manifest: ${manifestFile()}`,
+				`Recorded relocations: ${records.length}`,
+				`Discovered relocated sessions: ${discovered.length}`,
+			];
+
+			if (currentIndex >= 0) lines.push(`Current session is recorded relocation #${currentIndex + 1}.`);
+			else if (sessionFile) lines.push("Current session is not recorded as a relocation destination.");
+
+			lines.push("", "Recent recorded relocations:");
+			for (const [index, record] of records.slice(-10).entries()) {
+				const n = records.length - Math.min(10, records.length) + index + 1;
+				lines.push(`${n}. ${record.ts}`);
+				lines.push(`   ${record.fromCwd} -> ${record.toCwd}`);
+				lines.push(`   dest: ${record.destinationSession}`);
+			}
+			if (records.length === 0) lines.push("(none)");
+
+			const unrecorded = discovered.filter((path) => !byDestination.has(path));
+			if (unrecorded.length) {
+				lines.push("", "Discovered relocated sessions not in manifest:");
+				for (const path of unrecorded.slice(-20)) lines.push(`- ${path}`);
+			}
+
+			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 }
