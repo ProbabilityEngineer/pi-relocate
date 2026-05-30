@@ -158,6 +158,45 @@ function storeFile(): string {
 	return join(defaultAgentDir(), "session-store", "session-store.sqlite");
 }
 
+type ObservationMark = { markType: string; reason?: string; replacementObservationId?: string; replacementPath?: string; timestamp: string; confidence: string; manualReviewRequired: boolean };
+
+function currentSessionMarks(sessionFile?: string): ObservationMark[] {
+	if (!sessionFile) return [];
+	try {
+		const db = new DatabaseSync(storeFile(), { readOnly: true });
+		try {
+			initStore(db);
+			const rows = db.prepare(`
+SELECT m.mark_type AS markType, m.reason AS reason, m.replacement_observation_id AS replacementObservationId, r.path AS replacementPath, m.timestamp AS timestamp, m.confidence AS confidence, m.manual_review_required AS manualReviewRequired
+FROM observation_marks m
+JOIN session_observations o ON o.id = m.observation_id
+LEFT JOIN session_observations r ON r.id = m.replacement_observation_id
+WHERE o.path = ?
+ORDER BY m.timestamp DESC, m.mark_type
+`).all(sessionFile) as { markType: string; reason?: string; replacementObservationId?: string; replacementPath?: string; timestamp: string; confidence: string; manualReviewRequired: number }[];
+			return rows.map((row) => ({ ...row, manualReviewRequired: Boolean(row.manualReviewRequired) }));
+		} finally {
+			db.close();
+		}
+	} catch {
+		return [];
+	}
+}
+
+function movedWarningLines(sessionFile?: string): string[] {
+	const marks = currentSessionMarks(sessionFile);
+	const relevant = marks.filter((mark) => mark.markType === "superseded" || mark.markType === "deletion_candidate");
+	if (!relevant.length) return [];
+	const replacement = relevant.find((mark) => mark.replacementPath)?.replacementPath;
+	return [
+		"",
+		"⚠ Current session has canonical-store availability marks:",
+		...relevant.map((mark) => `- ${mark.markType} @ ${mark.timestamp}${mark.reason ? ` — ${mark.reason}` : ""}`),
+		...(replacement ? ["", `Suggested active replacement: ${shortPath(replacement)}`] : []),
+		"Raw session file has not been deleted; recovery remains possible.",
+	];
+}
+
 function displayName(ctx: any): string | undefined {
 	const candidates = [
 		ctx.sessionManager?.getSessionName?.(),
@@ -424,6 +463,7 @@ async function buildStatusOutput(ctx: any, showAll = false): Promise<string> {
 		`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 		`Current session id: ${ctx.sessionManager?.getSessionId?.() ?? "unknown"}`,
 		`Current session tracked: ${currentIndex >= 0 ? `yes (#${currentIndex + 1})` : "no"}`,
+		...movedWarningLines(sessionFile),
 		`Manifest records: ${records.length}`,
 		`Current lineage hops: ${currentLineage.length}`,
 		`Forks from current lineage: ${forks.length}`,
@@ -448,6 +488,7 @@ async function buildLineageOutput(ctx: any, showFiles = false): Promise<string> 
 		`Current cwd: ${shortPath(ctx.cwd ?? "")}`,
 		`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 		`Current session id: ${ctx.sessionManager?.getSessionId?.() ?? "unknown"}`,
+		...movedWarningLines(sessionFile),
 		"",
 		"Current position:",
 		...lineageSummary(records, sessionFile),
@@ -701,6 +742,7 @@ export default function (pi: ExtensionAPI) {
 				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 				`Current session id: ${currentSessionId}`,
 				`Current session tracked: ${currentIndex >= 0 ? `yes (#${currentIndex + 1})` : "no"}`,
+				...movedWarningLines(sessionFile),
 				`Manifest records: ${records.length}`,
 				`Current lineage hops: ${currentLineage.length}`,
 				`Forks from current lineage: ${forks.length}`,
@@ -754,6 +796,7 @@ export default function (pi: ExtensionAPI) {
 				`Current cwd: ${shortPath(ctx.cwd)}`,
 				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 				`Current session id: ${ctx.sessionManager.getSessionId()}`,
+				...movedWarningLines(sessionFile),
 				"",
 				"Current position:",
 				...lineageSummary(records, sessionFile),

@@ -1,6 +1,6 @@
 ---
 id: pr-resume-warnings
-status: open
+status: closed
 deps: [pr-branch-mode]
 links:
   - git:github.com/ProbabilityEngineer/agent-session-store
