@@ -1,6 +1,6 @@
 ---
 id: pr-branch-mode
-status: open
+status: closed
 deps: []
 links:
   - git:github.com/ProbabilityEngineer/agent-session-store

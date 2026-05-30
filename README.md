@@ -21,7 +21,8 @@ pi -e ./index.ts
 Inside Pi:
 
 ```text
-/relocate <target-directory>
+/relocate [--branch] <target-directory>
+/relocate-bucket [--dry-run] [--branch] <target-directory>
 /relocate-status [--all]
 /relocate-lineage [--files]
 /relocate-store-replay
@@ -76,7 +77,15 @@ Use `--force` to skip confirmation:
 
 Each record includes the timestamp, source cwd, target cwd, source session file, destination session file, parent session, replacement count, and Pi session ID when available.
 
-The raw manifest remains the durable fallback. Store updates are best-effort: if SQLite writing fails, relocation still succeeds after the raw manifest append and the user is warned. Use `/relocate-store-replay` to replay `relocations.jsonl` into the canonical store after DB rebuilds or schema upgrades.
+The raw manifest remains the durable fallback. Store updates are best-effort: if SQLite writing fails, relocation still succeeds after the raw manifest append and the user is warned. By default `/relocate` uses move semantics in the canonical store: the source observation is marked `superseded` and `deletion_candidate` for manual review, but the original file is never deleted. Use `--branch` when you intentionally want both source and destination to remain active. Use `/relocate-store-replay` to replay `relocations.jsonl` into the canonical store after DB rebuilds or schema upgrades.
+
+Use `/relocate-bucket` when a whole repo/cwd bucket moved and all sessions in the source bucket should be copied to the destination bucket. Always start with:
+
+```text
+/relocate-bucket --dry-run <target-directory>
+```
+
+Then run without `--dry-run` after reviewing the affected sessions. Bucket relocation writes one manifest/store edge per copied session, records a batch id in the store, and marks old source observations for manual deletion review in move mode. It does not delete originals.
 
 Use `/relocate-status` for a compact overview: current session tracking, latest relocations, fork count, and unrecorded relocated file count. Use `/relocate-status --all` for full recorded and discovered details.
 

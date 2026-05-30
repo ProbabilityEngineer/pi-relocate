@@ -44,6 +44,8 @@ type RelocationRecord = {
 	replacements: number | null;
 	sourceSessionId?: string;
 	destinationSessionId?: string;
+	mode?: "move" | "branch";
+	batchId?: string;
 	inferred?: boolean;
 	confidence?: string;
 };
@@ -73,6 +75,8 @@ CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, provider TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS session_observations (id TEXT PRIMARY KEY, session_id TEXT, source_id TEXT, path TEXT, provider_session_id TEXT, observed_at TEXT, snapshot_label TEXT, file_birthtime TEXT, file_mtime TEXT, file_size INTEGER, line_count INTEGER, first_event_at TEXT, last_event_at TEXT, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS edges (id TEXT PRIMARY KEY, source_session_id TEXT, target_session_id TEXT, edge_type TEXT NOT NULL, timestamp TEXT, source_observation_id TEXT, target_observation_id TEXT, confidence TEXT NOT NULL, provenance TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL, label_type TEXT NOT NULL, value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, source_id TEXT, evidence_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS observation_marks (id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, mark_type TEXT NOT NULL, reason TEXT, replacement_observation_id TEXT, source TEXT NOT NULL, timestamp TEXT NOT NULL, confidence TEXT NOT NULL, manual_review_required INTEGER NOT NULL DEFAULT 1, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS batch_operations (id TEXT PRIMARY KEY, operation_type TEXT NOT NULL, source_path TEXT NOT NULL, destination_path TEXT NOT NULL, timestamp TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -97,6 +101,8 @@ async function appendStoreRecord(record: RelocationRecord, name?: string): Promi
 		const upsertObs = db.prepare("INSERT OR REPLACE INTO session_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		const upsertEdge = db.prepare("INSERT OR REPLACE INTO edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		const upsertLabel = db.prepare("INSERT OR REPLACE INTO labels VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		const upsertMark = db.prepare("INSERT OR REPLACE INTO observation_marks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		const upsertBatch = db.prepare("INSERT OR REPLACE INTO batch_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		const sourceSessionId = sessionFileId(record.sourceSession);
 		const destSessionId = sessionFileId(record.destinationSession);
 		const sourceObsId = observationId(record.sourceSession);
@@ -108,7 +114,12 @@ async function appendStoreRecord(record: RelocationRecord, name?: string): Promi
 		upsertObs.run(sourceObsId, sourceSessionId, sourceId, record.sourceSession, record.sourceSessionId ?? null, record.ts, null, sourceStats.fileBirthtime, sourceStats.fileMtime, sourceStats.byteCount, sourceStats.lineCount, null, null, null, null, JSON.stringify({ cwd: record.fromCwd }));
 		upsertObs.run(destObsId, destSessionId, sourceId, record.destinationSession, record.destinationSessionId ?? null, record.ts, null, destStats.fileBirthtime, destStats.fileMtime, destStats.byteCount, destStats.lineCount, null, null, null, null, JSON.stringify({ cwd: record.toCwd }));
 		const edgeId = hashId("edge", record.ts, record.sourceSession, record.destinationSession);
-		upsertEdge.run(edgeId, sourceSessionId, destSessionId, "relocation", record.ts, sourceObsId, destObsId, "authoritative", "pi-relocate", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId }));
+		upsertEdge.run(edgeId, sourceSessionId, destSessionId, record.mode === "branch" ? "branch" : "relocation", record.ts, sourceObsId, destObsId, "authoritative", "pi-relocate", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode: record.mode ?? "move", batchId: record.batchId }));
+		if (record.batchId) upsertBatch.run(record.batchId, "bucket_relocation", record.fromCwd, record.toCwd, record.ts, "pi-relocate", "applied", JSON.stringify({ mode: record.mode ?? "move" }));
+		if ((record.mode ?? "move") === "move") {
+			upsertMark.run(hashId("mark", sourceObsId, "superseded", destObsId, record.ts), sourceObsId, "superseded", "relocated by pi-relocate move semantics", destObsId, "pi-relocate", record.ts, "authoritative", 1, JSON.stringify({ batchId: record.batchId }));
+			upsertMark.run(hashId("mark", sourceObsId, "deletion_candidate", destObsId, record.ts), sourceObsId, "deletion_candidate", "old copy after relocation; requires manual review before deletion", destObsId, "pi-relocate", record.ts, "authoritative", 1, JSON.stringify({ batchId: record.batchId }));
+		}
 		upsertLabel.run(hashId("label", sourceSessionId, "cwd", record.fromCwd), "session", sourceSessionId, "cwd", record.fromCwd, null, null, "authoritative", sourceId, null, "{}");
 		upsertLabel.run(hashId("label", destSessionId, "cwd", record.toCwd), "session", destSessionId, "cwd", record.toCwd, null, null, "authoritative", sourceId, null, "{}");
 		if (name) {
@@ -191,6 +202,28 @@ async function readManifest(): Promise<RelocationRecord[]> {
 	}
 }
 
+async function sessionFilesInBucket(cwd: string): Promise<string[]> {
+	const dir = join(defaultAgentDir(), "sessions", sessionBucketName(cwd));
+	const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+	return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => join(dir, entry.name)).sort();
+}
+
+async function relocateSessionFile(sourceFile: string, oldCwd: string, targetCwd: string, mode: "move" | "branch", batchId?: string, name?: string): Promise<{ record: RelocationRecord; replacements: number }> {
+	const original = await readFile(sourceFile, "utf8");
+	let relocated = replaceAllLiteral(original, oldCwd, targetCwd);
+	relocated = replaceAllLiteral(relocated, oldCwd.replace(/\//g, "\\/"), targetCwd.replace(/\//g, "\\/"));
+	const replacements = original === relocated ? 0 : original.split(oldCwd).length - 1;
+	const destinationDir = join(defaultAgentDir(), "sessions", sessionBucketName(targetCwd));
+	await mkdir(destinationDir, { recursive: true });
+	const destinationFile = join(destinationDir, uniqueRelocatedName(sourceFile));
+	await writeFile(destinationFile, relocated, { encoding: "utf8", flag: "wx" });
+	const sessionId = basename(sourceFile).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_|\.|$)/)?.[1];
+	const record = { ts: new Date().toISOString(), fromCwd: oldCwd, toCwd: targetCwd, sourceSession: sourceFile, destinationSession: destinationFile, parent: sourceFile, replacements, sourceSessionId: sessionId, destinationSessionId: sessionId, mode, batchId } satisfies RelocationRecord;
+	await appendManifest(record);
+	await appendStoreRecord(record, name);
+	return { record, replacements };
+}
+
 async function findRelocatedSessions(root = join(defaultAgentDir(), "sessions")): Promise<string[]> {
 	const found: string[] = [];
 	async function walk(dir: string): Promise<void> {
@@ -227,15 +260,19 @@ function parseWords(args: string): string[] {
 	});
 }
 
-function parseArgs(args: string): { target?: string; force: boolean } {
+function parseArgs(args: string): { target?: string; force: boolean; branch: boolean; dryRun: boolean } {
 	let force = false;
+	let branch = false;
+	let dryRun = false;
 	const positional: string[] = [];
 	for (const value of parseWords(args)) {
 		if (value === "--force" || value === "-f") force = true;
+		else if (value === "--branch" || value === "--copy") branch = true;
+		else if (value === "--dry-run" || value === "-n") dryRun = true;
 		else positional.push(value);
 	}
 
-	return { target: positional.join(" ") || undefined, force };
+	return { target: positional.join(" ") || undefined, force, branch, dryRun };
 }
 
 function hasFlag(args: string, flag: string): boolean {
@@ -454,7 +491,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Copy this session to another cwd by replacing old path strings; restart Pi there with --session. Records lineage in relocations.jsonl. No LLM call.",
 		handler: async (args, ctx) => {
-			const { target, force } = parseArgs(args);
+			const { target, force, branch } = parseArgs(args);
 			if (!target) {
 				ctx.ui.notify("Usage: /relocate [--force] <target-directory>", "error");
 				return;
@@ -491,6 +528,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						`From: ${oldCwd}`,
 						`To:   ${targetCwd}`,
+						`Mode: ${branch ? "branch/copy (source remains active)" : "move (source marked superseded in store)"}`,
 					].join("\n"),
 				);
 				if (!ok) return;
@@ -525,6 +563,7 @@ export default function (pi: ExtensionAPI) {
 				replacements,
 				sourceSessionId: sessionId,
 				destinationSessionId: sessionId,
+				mode: branch ? "branch" : "move",
 			} satisfies RelocationRecord;
 			await appendManifest(record);
 			let storeWarning: string | undefined;
@@ -545,11 +584,83 @@ export default function (pi: ExtensionAPI) {
 					"",
 					"Restart Pi with:",
 					command,
+					"",
+					`Mode: ${branch ? "branch/copy" : "move; source marked superseded in canonical store"}`,
 					...(name ? ["", `Session name preserved in restart script: ${name}`] : []),
 					...(storeWarning ? ["", storeWarning] : []),
 				].join("\n"),
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("relocate-bucket", {
+		description: "Relocate all session files in the current cwd bucket to another cwd. Originals are not deleted; move mode marks them superseded in the store. Use --dry-run first.",
+		handler: async (args, ctx) => {
+			const { target, force, branch, dryRun } = parseArgs(args);
+			if (!target) {
+				ctx.ui.notify("Usage: /relocate-bucket [--dry-run] [--branch] [--force] <target-directory>", "error");
+				return;
+			}
+			const oldCwd = normalizeDir(ctx.cwd);
+			const targetCwd = normalizeDir(isAbsolute(target) ? target : resolve(ctx.cwd, target));
+			const targetStat = await stat(targetCwd).catch(() => undefined);
+			if (!targetStat?.isDirectory()) {
+				ctx.ui.notify(`Not a directory: ${targetCwd}`, "error");
+				return;
+			}
+			const files = await sessionFilesInBucket(oldCwd);
+			if (!files.length) {
+				ctx.ui.notify(`No session files found in current bucket: ${sessionBucketName(oldCwd)}`, "warning");
+				return;
+			}
+			const mode = branch ? "branch" : "move";
+			const preview = [
+				"Bucket relocation",
+				"",
+				`From: ${oldCwd}`,
+				`To:   ${targetCwd}`,
+				`Mode: ${mode === "branch" ? "branch/copy" : "move; source observations marked superseded in store"}`,
+				`Sessions: ${files.length}`,
+				"",
+				...files.slice(0, 20).map((file) => `- ${shortPath(file)}`),
+				...(files.length > 20 ? [`- ... ${files.length - 20} more`] : []),
+			].join("\n");
+			if (dryRun) {
+				ctx.ui.notify(`${preview}\n\nDry run only; no files or records were written.`, "info");
+				return;
+			}
+			if (!force) {
+				const ok = await ctx.ui.confirm("Relocate all sessions in bucket?", `${preview}\n\nOriginals will not be deleted.`);
+				if (!ok) return;
+			}
+			await ctx.waitForIdle();
+			const batchId = hashId("batch", new Date().toISOString(), oldCwd, targetCwd, String(files.length));
+			let ok = 0;
+			let failed = 0;
+			let replacements = 0;
+			const failures: string[] = [];
+			for (const file of files) {
+				try {
+					const result = await relocateSessionFile(file, oldCwd, targetCwd, mode, batchId, displayName(ctx));
+					ok++;
+					replacements += result.replacements;
+				} catch (error) {
+					failed++;
+					failures.push(`${shortPath(file)}: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+			ctx.ui.notify([
+				"Bucket relocation complete",
+				"",
+				`Batch: ${batchId}`,
+				`Written: ${ok}`,
+				`Failed: ${failed}`,
+				`Total direct replacements: ${replacements}`,
+				"Original files were not deleted.",
+				...(mode === "move" ? ["Source observations were marked superseded/deletion-review candidates in the canonical store."] : ["Branch mode: source observations remain active."]),
+				...(failures.length ? ["", "Failures:", ...failures.slice(0, 10)] : []),
+			].join("\n"), failed ? "warning" : "info");
 		},
 	});
 
