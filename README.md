@@ -24,6 +24,7 @@ Inside Pi:
 /relocate <target-directory>
 /relocate-status [--all]
 /relocate-lineage [--files]
+/relocate-store-replay
 ```
 
 Example:
@@ -39,8 +40,9 @@ The command will:
 3. copy the current session file into the target cwd's Pi session bucket,
 4. replace occurrences of the old absolute cwd with the new absolute cwd,
 5. append a lineage record to `~/.pi/agent/relocations.jsonl`,
-6. write short restart scripts under `~/.pi/agent/relocations/`, and
-7. print a short restart command.
+6. best-effort update the canonical SQLite session store at `~/.pi/agent/session-store/session-store.sqlite`,
+7. write short restart scripts under `~/.pi/agent/relocations/`, and
+8. print a short restart command.
 
 Restart with the printed command, which looks like:
 
@@ -55,6 +57,8 @@ The extension also writes a timestamped script for each relocation:
 ```
 
 Restart scripts intentionally use `pi --session <exact-file>` rather than `pi --session-id <id>`. Pi 0.76 adds `--session-id` for exact project-local automation, and `pi-relocate` records session IDs for lineage, but copied relocated files still use the verified exact-file path until ID-to-file behavior is validated for this workflow.
+
+When Pi exposes a current session display name, restart scripts preserve it with `--name`, and the canonical store records it as a `display_name` label separate from cwd/project labels.
 
 Use `--force` to skip confirmation:
 
@@ -71,6 +75,8 @@ Use `--force` to skip confirmation:
 ```
 
 Each record includes the timestamp, source cwd, target cwd, source session file, destination session file, parent session, replacement count, and Pi session ID when available.
+
+The raw manifest remains the durable fallback. Store updates are best-effort: if SQLite writing fails, relocation still succeeds after the raw manifest append and the user is warned. Use `/relocate-store-replay` to replay `relocations.jsonl` into the canonical store after DB rebuilds or schema upgrades.
 
 Use `/relocate-status` for a compact overview: current session tracking, latest relocations, fork count, and unrecorded relocated file count. Use `/relocate-status --all` for full recorded and discovered details.
 

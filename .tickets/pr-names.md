@@ -1,6 +1,6 @@
 ---
 id: pr-names
-status: open
+status: closed
 deps: []
 links:
   - https://github.com/earendil-works/pi/issues/5153

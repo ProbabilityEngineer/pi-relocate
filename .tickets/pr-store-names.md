@@ -1,6 +1,6 @@
 ---
 id: pr-store-names
-status: open
+status: closed
 deps: [pr-store-write]
 links:
   - https://github.com/earendil-works/pi/issues/5153

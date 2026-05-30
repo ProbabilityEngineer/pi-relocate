@@ -1,6 +1,6 @@
 ---
 id: pr-store-replay
-status: open
+status: closed
 deps: [pr-store-write]
 links:
   - git:github.com/ProbabilityEngineer/agent-session-store

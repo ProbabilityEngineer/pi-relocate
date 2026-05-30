@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { chmod, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 function shellQuote(value: string): string {
@@ -53,6 +54,87 @@ async function appendManifest(record: RelocationRecord): Promise<void> {
 	await writeFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "a" });
 }
 
+function hashId(prefix: string, ...parts: (string | undefined)[]) {
+	return `${prefix}_${parts.filter(Boolean).join("\u0000").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 48)}_${Math.abs(parts.join("\u0000").split("").reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0)).toString(16)}`;
+}
+
+function sessionFileId(path: string) {
+	return hashId("session", path);
+}
+
+function observationId(path: string) {
+	return hashId("obs", path);
+}
+
+function initStore(db: DatabaseSync) {
+	db.exec(`
+CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, uri TEXT NOT NULL, label TEXT, first_observed_at TEXT, last_observed_at TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_session_id TEXT, canonical_key TEXT NOT NULL UNIQUE, first_seen_at TEXT, last_seen_at TEXT, start_timestamp TEXT, end_timestamp TEXT, event_count INTEGER, line_count INTEGER, byte_count INTEGER, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS session_observations (id TEXT PRIMARY KEY, session_id TEXT, source_id TEXT, path TEXT, provider_session_id TEXT, observed_at TEXT, snapshot_label TEXT, file_birthtime TEXT, file_mtime TEXT, file_size INTEGER, line_count INTEGER, first_event_at TEXT, last_event_at TEXT, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS edges (id TEXT PRIMARY KEY, source_session_id TEXT, target_session_id TEXT, edge_type TEXT NOT NULL, timestamp TEXT, source_observation_id TEXT, target_observation_id TEXT, confidence TEXT NOT NULL, provenance TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL, label_type TEXT NOT NULL, value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, source_id TEXT, evidence_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+`);
+}
+
+async function sessionStats(path: string) {
+	try {
+		const [raw, st] = await Promise.all([readFile(path, "utf8"), stat(path)]);
+		const lines = raw.split("\n").filter((line) => line.trim());
+		return { lineCount: lines.length, byteCount: st.size, fileBirthtime: st.birthtime.toISOString(), fileMtime: st.mtime.toISOString() };
+	} catch {
+		return { lineCount: null, byteCount: null, fileBirthtime: null, fileMtime: null };
+	}
+}
+
+async function appendStoreRecord(record: RelocationRecord, name?: string): Promise<void> {
+	await mkdir(dirname(storeFile()), { recursive: true });
+	const db = new DatabaseSync(storeFile());
+	try {
+		initStore(db);
+		const sourceId = "source_pi_relocate_manifest";
+		db.prepare("INSERT OR IGNORE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(sourceId, "pi", "relocation_manifest", manifestFile(), "Pi relocation manifest", null, null, "{}");
+		const upsertSession = db.prepare("INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		const upsertObs = db.prepare("INSERT OR REPLACE INTO session_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		const upsertEdge = db.prepare("INSERT OR REPLACE INTO edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		const upsertLabel = db.prepare("INSERT OR REPLACE INTO labels VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		const sourceSessionId = sessionFileId(record.sourceSession);
+		const destSessionId = sessionFileId(record.destinationSession);
+		const sourceObsId = observationId(record.sourceSession);
+		const destObsId = observationId(record.destinationSession);
+		const sourceStats = await sessionStats(record.sourceSession);
+		const destStats = await sessionStats(record.destinationSession);
+		upsertSession.run(sourceSessionId, "pi", record.sourceSessionId ?? null, record.sourceSession, null, record.ts, null, null, null, sourceStats.lineCount, sourceStats.byteCount, null, null, JSON.stringify({ cwd: record.fromCwd, ...(name ? { displayName: name } : {}) }));
+		upsertSession.run(destSessionId, "pi", record.destinationSessionId ?? null, record.destinationSession, record.ts, null, null, null, null, destStats.lineCount, destStats.byteCount, null, null, JSON.stringify({ cwd: record.toCwd, ...(name ? { displayName: name } : {}) }));
+		upsertObs.run(sourceObsId, sourceSessionId, sourceId, record.sourceSession, record.sourceSessionId ?? null, record.ts, null, sourceStats.fileBirthtime, sourceStats.fileMtime, sourceStats.byteCount, sourceStats.lineCount, null, null, null, null, JSON.stringify({ cwd: record.fromCwd }));
+		upsertObs.run(destObsId, destSessionId, sourceId, record.destinationSession, record.destinationSessionId ?? null, record.ts, null, destStats.fileBirthtime, destStats.fileMtime, destStats.byteCount, destStats.lineCount, null, null, null, null, JSON.stringify({ cwd: record.toCwd }));
+		const edgeId = hashId("edge", record.ts, record.sourceSession, record.destinationSession);
+		upsertEdge.run(edgeId, sourceSessionId, destSessionId, "relocation", record.ts, sourceObsId, destObsId, "authoritative", "pi-relocate", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId }));
+		upsertLabel.run(hashId("label", sourceSessionId, "cwd", record.fromCwd), "session", sourceSessionId, "cwd", record.fromCwd, null, null, "authoritative", sourceId, null, "{}");
+		upsertLabel.run(hashId("label", destSessionId, "cwd", record.toCwd), "session", destSessionId, "cwd", record.toCwd, null, null, "authoritative", sourceId, null, "{}");
+		if (name) {
+			upsertLabel.run(hashId("label", sourceSessionId, "display", name), "session", sourceSessionId, "display_name", name, null, null, "authoritative", sourceId, null, "{}");
+			upsertLabel.run(hashId("label", destSessionId, "display", name), "session", destSessionId, "display_name", name, null, null, "authoritative", sourceId, null, "{}");
+		}
+	} finally {
+		db.close();
+	}
+}
+
+async function replayManifestToStore(records?: RelocationRecord[]): Promise<{ ok: number; failed: number }> {
+	records ??= await readManifest();
+	let ok = 0;
+	let failed = 0;
+	for (const record of records) {
+		try {
+			await appendStoreRecord(record);
+			ok++;
+		} catch {
+			failed++;
+		}
+	}
+	return { ok, failed };
+}
+
 function relocationScriptsDir(): string {
 	return join(defaultAgentDir(), "relocations");
 }
@@ -61,7 +143,21 @@ function scriptStamp(): string {
 	return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-async function writeRestartScripts(targetCwd: string, sessionFile: string, sessionId?: string): Promise<{ scriptFile: string; latestFile: string }> {
+function storeFile(): string {
+	return join(defaultAgentDir(), "session-store", "session-store.sqlite");
+}
+
+function displayName(ctx: any): string | undefined {
+	const candidates = [
+		ctx.sessionManager?.getSessionName?.(),
+		ctx.sessionManager?.getDisplayName?.(),
+		ctx.session?.name,
+		ctx.session?.displayName,
+	].filter((value) => typeof value === "string" && value.trim()) as string[];
+	return candidates[0];
+}
+
+async function writeRestartScripts(targetCwd: string, sessionFile: string, sessionId?: string, name?: string): Promise<{ scriptFile: string; latestFile: string }> {
 	const dir = relocationScriptsDir();
 	await mkdir(dir, { recursive: true });
 	const content = [
@@ -70,7 +166,7 @@ async function writeRestartScripts(targetCwd: string, sessionFile: string, sessi
 		...(sessionId ? [`# Pi session id: ${sessionId}`] : []),
 		"# Use --session with the exact relocated file. Do not switch to --session-id until Pi's ID-to-file mapping is verified for copied sessions.",
 		`cd ${shellQuote(targetCwd)}`,
-		`exec pi --session ${shellQuote(sessionFile)}`,
+		`exec pi ${name ? `--name ${shellQuote(name)} ` : ""}--session ${shellQuote(sessionFile)}`,
 		"",
 	].join("\n");
 	const scriptFile = join(dir, `run-${scriptStamp()}.sh`);
@@ -417,8 +513,9 @@ export default function (pi: ExtensionAPI) {
 
 			const destinationFile = join(destinationDir, uniqueRelocatedName(sessionFile));
 			await writeFile(destinationFile, relocated, { encoding: "utf8", flag: "wx" });
-			const restart = await writeRestartScripts(targetCwd, destinationFile, sessionId);
-			await appendManifest({
+			const name = displayName(ctx);
+			const restart = await writeRestartScripts(targetCwd, destinationFile, sessionId, name);
+			const record = {
 				ts: new Date().toISOString(),
 				fromCwd: oldCwd,
 				toCwd: targetCwd,
@@ -428,7 +525,14 @@ export default function (pi: ExtensionAPI) {
 				replacements,
 				sourceSessionId: sessionId,
 				destinationSessionId: sessionId,
-			});
+			} satisfies RelocationRecord;
+			await appendManifest(record);
+			let storeWarning: string | undefined;
+			try {
+				await appendStoreRecord(record, name);
+			} catch (error) {
+				storeWarning = `Canonical store update failed; raw manifest was written. ${error instanceof Error ? error.message : String(error)}`;
+			}
 
 			const command = `bash ${shellQuote(restart.latestFile)}`;
 			ctx.ui.notify(
@@ -441,9 +545,28 @@ export default function (pi: ExtensionAPI) {
 					"",
 					"Restart Pi with:",
 					command,
+					...(name ? ["", `Session name preserved in restart script: ${name}`] : []),
+					...(storeWarning ? ["", storeWarning] : []),
 				].join("\n"),
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("relocate-store-replay", {
+		description: "Replay relocations.jsonl into the canonical SQLite session store. Does not mutate session JSONLs.",
+		handler: async (_args, ctx) => {
+			const result = await replayManifestToStore();
+			ctx.ui.notify([
+				"Relocation store replay complete",
+				"",
+				`Manifest: ${shortPath(manifestFile())}`,
+				`Store: ${shortPath(storeFile())}`,
+				`Written/updated: ${result.ok}`,
+				`Failed: ${result.failed}`,
+				"",
+				"Session JSONLs and relocations.jsonl were not modified.",
+			].join("\n"), result.failed ? "warning" : "info");
 		},
 	});
 
