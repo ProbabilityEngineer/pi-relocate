@@ -131,12 +131,16 @@ async function appendStoreRecord(record: RelocationRecord, name?: string): Promi
 		upsertSession.run(destSessionId, "pi", record.destinationSessionId ?? null, record.destinationSession, record.ts, null, null, null, null, destStats.lineCount, destStats.byteCount, null, null, JSON.stringify({ cwd: record.toCwd, ...(name ? { displayName: name } : {}) }));
 		upsertObs.run(sourceObsId, sourceSessionId, sourceId, record.sourceSession, record.sourceSessionId ?? null, record.ts, null, sourceStats.fileBirthtime, sourceStats.fileMtime, sourceStats.byteCount, sourceStats.lineCount, null, null, null, null, JSON.stringify({ cwd: record.fromCwd }));
 		upsertObs.run(destObsId, destSessionId, sourceId, record.destinationSession, record.destinationSessionId ?? null, record.ts, null, destStats.fileBirthtime, destStats.fileMtime, destStats.byteCount, destStats.lineCount, null, null, null, null, JSON.stringify({ cwd: record.toCwd }));
+		const inferredLegacyMove = record.mode === undefined;
+		const mode = record.mode ?? "move";
+		const confidence = inferredLegacyMove ? "inferred-from-legacy-manifest" : "authoritative";
 		const edgeId = hashId("edge", record.ts, record.sourceSession, record.destinationSession);
-		upsertEdge.run(edgeId, sourceSessionId, destSessionId, record.mode === "branch" ? "branch" : "relocation", record.ts, sourceObsId, destObsId, "authoritative", "pi-relocate", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode: record.mode ?? "move", batchId: record.batchId, sourceLinesAtEvent: record.sourceLinesAtEvent, sourceBytesAtEvent: record.sourceBytesAtEvent }));
-		if (record.batchId) upsertBatch.run(record.batchId, "bucket_relocation", record.fromCwd, record.toCwd, record.ts, "pi-relocate", "applied", JSON.stringify({ mode: record.mode ?? "move" }));
-		if ((record.mode ?? "move") === "move") {
-			upsertMark.run(hashId("mark", sourceObsId, "superseded", destObsId, record.ts), sourceObsId, "superseded", "relocated by pi-relocate move semantics", destObsId, "pi-relocate", record.ts, "authoritative", 1, JSON.stringify({ batchId: record.batchId }));
-			upsertMark.run(hashId("mark", sourceObsId, "deletion_candidate", destObsId, record.ts), sourceObsId, "deletion_candidate", "old copy after relocation; requires manual review before deletion", destObsId, "pi-relocate", record.ts, "authoritative", 1, JSON.stringify({ batchId: record.batchId }));
+		upsertEdge.run(edgeId, sourceSessionId, destSessionId, mode === "branch" ? "branch" : "relocation", record.ts, sourceObsId, destObsId, confidence, "pi-relocate", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode, batchId: record.batchId, sourceLinesAtEvent: record.sourceLinesAtEvent, sourceBytesAtEvent: record.sourceBytesAtEvent, inferredLegacyMove }));
+		if (record.batchId) upsertBatch.run(record.batchId, "bucket_relocation", record.fromCwd, record.toCwd, record.ts, "pi-relocate", "applied", JSON.stringify({ mode, inferredLegacyMove }));
+		if (mode === "move") {
+			const markReason = inferredLegacyMove ? "legacy relocation manifest record inferred as move; manual review required" : "relocated by pi-relocate move semantics";
+			upsertMark.run(hashId("mark", sourceObsId, "superseded", destObsId, record.ts), sourceObsId, "superseded", markReason, destObsId, "pi-relocate", record.ts, confidence, 1, JSON.stringify({ batchId: record.batchId, inferredLegacyMove }));
+			upsertMark.run(hashId("mark", sourceObsId, "deletion_candidate", destObsId, record.ts), sourceObsId, "deletion_candidate", "old copy after relocation; requires manual review before deletion", destObsId, "pi-relocate", record.ts, confidence, 1, JSON.stringify({ batchId: record.batchId, inferredLegacyMove }));
 		}
 		upsertLabel.run(hashId("label", sourceSessionId, "cwd", record.fromCwd), "session", sourceSessionId, "cwd", record.fromCwd, null, null, "authoritative", sourceId, null, "{}");
 		upsertLabel.run(hashId("label", destSessionId, "cwd", record.toCwd), "session", destSessionId, "cwd", record.toCwd, null, null, "authoritative", sourceId, null, "{}");
