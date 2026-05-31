@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS edges (id TEXT PRIMARY KEY, source_session_id TEXT, t
 CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL, label_type TEXT NOT NULL, value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, source_id TEXT, evidence_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS observation_marks (id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, mark_type TEXT NOT NULL, reason TEXT, replacement_observation_id TEXT, source TEXT NOT NULL, timestamp TEXT NOT NULL, confidence TEXT NOT NULL, manual_review_required INTEGER NOT NULL DEFAULT 1, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS batch_operations (id TEXT PRIMARY KEY, operation_type TEXT NOT NULL, source_path TEXT NOT NULL, destination_path TEXT NOT NULL, timestamp TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS prune_operations (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, source_path TEXT NOT NULL, replacement_path TEXT, action TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, trash_path TEXT, current_lines INTEGER, event_lines INTEGER, current_bytes INTEGER, event_bytes INTEGER, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -181,6 +182,7 @@ function storeFile(): string {
 }
 
 type ObservationMark = { markType: string; reason?: string; replacementObservationId?: string; replacementPath?: string; observationPath?: string; timestamp: string; confidence: string; manualReviewRequired: boolean };
+type PruneCandidate = { sourcePath: string; replacementPath?: string; timestamp: string; confidence: string; eventLines?: number; eventBytes?: number; currentLines?: number; currentBytes?: number; category: "eligible" | "legacy-review" | "unsafe"; reason: string };
 type ThreadResumeTarget = { threadId: string; status: string; recommendedSessionId?: string; recommendedObservationId?: string; recommendedPath?: string; activeLeafPaths: string[]; recoverablePaths: string[]; reasons: string[] };
 
 function currentSessionMarks(sessionFile?: string): ObservationMark[] {
@@ -204,6 +206,85 @@ ORDER BY m.timestamp DESC, m.mark_type
 	} catch {
 		return [];
 	}
+}
+
+async function uniqueTrashPath(sourcePath: string): Promise<string> {
+	const trashDir = join(process.env.HOME ?? dirname(sourcePath), ".Trash");
+	await mkdir(trashDir, { recursive: true });
+	const parsed = basename(sourcePath);
+	let candidate = join(trashDir, parsed);
+	let index = 1;
+	while (await stat(candidate).then(() => true, () => false)) {
+		candidate = join(trashDir, `${parsed}.${index}`);
+		index++;
+	}
+	return candidate;
+}
+
+function readPruneCandidates(currentSession?: string): PruneCandidate[] {
+	try {
+		const db = new DatabaseSync(storeFile(), { readOnly: true });
+		try {
+			initStore(db);
+			const rows = db.prepare(`
+SELECT o.path AS sourcePath, r.path AS replacementPath, m.timestamp AS timestamp, m.confidence AS confidence, e.metadata_json AS edgeMetadata
+FROM observation_marks m
+JOIN session_observations o ON o.id = m.observation_id
+LEFT JOIN session_observations r ON r.id = m.replacement_observation_id
+LEFT JOIN edges e ON e.source_observation_id = o.id AND e.target_observation_id = r.id
+WHERE m.mark_type = 'deletion_candidate'
+ORDER BY m.timestamp DESC, o.path
+`).all() as { sourcePath: string; replacementPath?: string; timestamp: string; confidence: string; edgeMetadata?: string }[];
+			const bySource = new Map<string, PruneCandidate>();
+			for (const row of rows) {
+				if (bySource.has(row.sourcePath)) continue;
+				let metadata: { sourceLinesAtEvent?: number; sourceBytesAtEvent?: number; mode?: string } = {};
+				try { metadata = row.edgeMetadata ? JSON.parse(row.edgeMetadata) : {}; } catch {}
+				let category: PruneCandidate["category"] = "eligible";
+				let reason = "superseded move source with replacement";
+				if (row.sourcePath === currentSession) { category = "unsafe"; reason = "current live session"; }
+				else if (!row.replacementPath) { category = "unsafe"; reason = "missing replacement observation"; }
+				else if (metadata.mode === "branch") { category = "unsafe"; reason = "branch/copy source"; }
+				else if (row.confidence !== "authoritative") { category = "legacy-review"; reason = `legacy/inferred mark (${row.confidence})`; }
+				bySource.set(row.sourcePath, { sourcePath: row.sourcePath, replacementPath: row.replacementPath, timestamp: row.timestamp, confidence: row.confidence, eventLines: metadata.sourceLinesAtEvent, eventBytes: metadata.sourceBytesAtEvent, category, reason });
+			}
+			return [...bySource.values()];
+		} finally { db.close(); }
+	} catch { return []; }
+}
+
+async function classifyPruneCandidates(currentSession?: string): Promise<PruneCandidate[]> {
+	const candidates = readPruneCandidates(currentSession);
+	for (const candidate of candidates) {
+		const sourceStats = await sessionStats(candidate.sourcePath);
+		candidate.currentLines = sourceStats.lineCount ?? undefined;
+		candidate.currentBytes = sourceStats.byteCount ?? undefined;
+		if (!(await stat(candidate.sourcePath).then((st) => st.isFile(), () => false))) {
+			candidate.category = "unsafe";
+			candidate.reason = "source file missing";
+		} else if (!candidate.replacementPath || !(await stat(candidate.replacementPath).then((st) => st.isFile(), () => false))) {
+			candidate.category = "unsafe";
+			candidate.reason = "replacement file missing";
+		} else if (candidate.category === "eligible" && candidate.eventLines !== undefined && candidate.currentLines !== candidate.eventLines) {
+			candidate.category = "unsafe";
+			candidate.reason = "source line count changed after relocation";
+		} else if (candidate.category === "eligible" && candidate.eventBytes !== undefined && candidate.currentBytes !== candidate.eventBytes) {
+			candidate.category = "unsafe";
+			candidate.reason = "source byte count changed after relocation";
+		} else if (candidate.category === "eligible" && (candidate.eventLines === undefined || candidate.eventBytes === undefined)) {
+			candidate.category = "legacy-review";
+			candidate.reason = "missing relocation line/byte checkpoint";
+		}
+	}
+	return candidates;
+}
+
+function recordPruneOperation(candidate: PruneCandidate, status: string, action: string, reason: string, trashPath?: string) {
+	const db = new DatabaseSync(storeFile());
+	try {
+		initStore(db);
+		db.prepare("INSERT OR REPLACE INTO prune_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(hashId("prune", candidate.sourcePath, new Date().toISOString()), new Date().toISOString(), candidate.sourcePath, candidate.replacementPath ?? null, action, status, reason, trashPath ?? null, candidate.currentLines ?? null, candidate.eventLines ?? null, candidate.currentBytes ?? null, candidate.eventBytes ?? null, "pi-relocate", JSON.stringify({ confidence: candidate.confidence, category: candidate.category }));
+	} finally { db.close(); }
 }
 
 function allAvailabilityMarks(): ObservationMark[] {
@@ -916,6 +997,59 @@ export default function (pi: ExtensionAPI) {
 				...(mode === "move" ? ["Source observations were marked superseded/deletion-review candidates in the canonical store."] : ["Branch mode: source observations remain active."]),
 				...(failures.length ? ["", "Failures:", ...failures.slice(0, 10)] : []),
 			].join("\n"), failed ? "warning" : "info");
+		},
+	});
+
+	pi.registerCommand("relocate-prune", {
+		description: "Safely move superseded relocation source session files to Trash. Use --dry-run first.",
+		handler: async (args, ctx) => {
+			const dryRun = hasFlag(args, "--dry-run") || hasFlag(args, "-n");
+			const force = hasFlag(args, "--force") || hasFlag(args, "-f");
+			const candidates = await classifyPruneCandidates(ctx.sessionManager?.getSessionFile?.());
+			const eligible = candidates.filter((c) => c.category === "eligible");
+			const legacy = candidates.filter((c) => c.category === "legacy-review");
+			const unsafe = candidates.filter((c) => c.category === "unsafe");
+			const preview = [
+				"Relocation prune candidates",
+				"",
+				`Eligible: ${eligible.length}`,
+				`Legacy/manual review: ${legacy.length}`,
+				`Unsafe/skipped: ${unsafe.length}`,
+				"",
+				...eligible.slice(0, 20).map((c) => `- ${shortPath(c.sourcePath)} -> Trash (${c.reason})`),
+				...(eligible.length > 20 ? [`- ... ${eligible.length - 20} more eligible`] : []),
+				...(legacy.length ? ["", "Legacy/manual review:", ...legacy.slice(0, 10).map((c) => `- ${shortPath(c.sourcePath)} (${c.reason})`)] : []),
+				...(unsafe.length ? ["", "Unsafe/skipped:", ...unsafe.slice(0, 10).map((c) => `- ${shortPath(c.sourcePath)} (${c.reason})`)] : []),
+			].join("\n");
+			if (dryRun) {
+				ctx.ui.notify(`${preview}\n\nDry run only; no files were moved.`, "info");
+				return;
+			}
+			if (!eligible.length) {
+				ctx.ui.notify(`${preview}\n\nNo eligible files to prune.`, "info");
+				return;
+			}
+			if (!force) {
+				const ok = await ctx.ui.confirm("Move superseded session files to Trash?", `${preview}\n\nThis moves eligible files to ~/.Trash and records prune_operations in the store. It does not permanently delete files.`);
+				if (!ok) return;
+			}
+			let trashed = 0;
+			let failed = 0;
+			const failures: string[] = [];
+			for (const candidate of eligible) {
+				try {
+					const trashPath = await uniqueTrashPath(candidate.sourcePath);
+					await rename(candidate.sourcePath, trashPath);
+					recordPruneOperation(candidate, "trashed", "trash", candidate.reason, trashPath);
+					trashed++;
+				} catch (error) {
+					failed++;
+					const reason = error instanceof Error ? error.message : String(error);
+					recordPruneOperation(candidate, "failed", "trash", reason);
+					failures.push(`${shortPath(candidate.sourcePath)}: ${reason}`);
+				}
+			}
+			ctx.ui.notify(["Relocation prune complete", "", `Trashed: ${trashed}`, `Failed: ${failed}`, `Legacy/manual review skipped: ${legacy.length}`, `Unsafe skipped: ${unsafe.length}`, ...(failures.length ? ["", "Failures:", ...failures.slice(0, 10)] : [])].join("\n"), failed ? "warning" : "info");
 		},
 	});
 
