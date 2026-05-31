@@ -1,6 +1,6 @@
 ---
 id: pr-create-target-dir
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-05-30T04:40:00Z

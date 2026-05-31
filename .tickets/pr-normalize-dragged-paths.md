@@ -1,27 +1,20 @@
 ---
 id: pr-normalize-dragged-paths
-status: open
+status: in_progress
 deps: []
 links: []
-created: 2026-05-31T03:20:00Z
-type: task
-priority: 2
+created: 2026-05-31T03:45:00Z
+type: bug
+priority: 1
 assignee: ProbabilityEngineer
 ---
-# Normalize dragged shell-escaped paths in relocate commands
+# Normalize dragged shell paths in relocation targets
 
-Finder/terminal dragged paths may include shell escapes such as `Mobile\ Documents` and `com\~apple\~CloudDocs`. Normalize these before resolving/statting target paths in all relevant relocate commands.
-
-Apply to:
-
-- `/relocate`
-- `/relocate-bucket`
-- future multi-repo/root relocation commands
+Finder/terminal dragged paths may include shell backslash escapes such as `Mobile\ Documents` and `com\~apple\~CloudDocs`. Normalize these before resolving/statting target paths for `/relocate` and `/relocate-bucket`.
 
 ## Acceptance Criteria
 
-- Dragged macOS paths with escaped spaces, tildes, parentheses, ampersands, and quotes are normalized before path resolution.
-- Quoted paths without backslashes continue to work.
-- Existing real paths containing no shell escapes are unchanged.
-- Existing non-directory targets still fail appropriately.
+- `/relocate` accepts quoted paths and dragged shell-escaped paths with spaces/tilde characters.
+- `/relocate-bucket` accepts quoted paths and dragged shell-escaped paths with spaces/tilde characters.
+- Existing valid paths without escapes are unchanged.
 - TypeScript check passes.
