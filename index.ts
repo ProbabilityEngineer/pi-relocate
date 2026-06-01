@@ -720,9 +720,16 @@ function lineageRoot(lineage: RelocationRecord[], sessionFile?: string): string 
 	return lineage[0]?.sourceSession ?? sessionFile;
 }
 
-function latestLineageName(names: LineageNameRecord[], root?: string): LineageNameRecord | undefined {
+function latestLineageName(names: LineageNameRecord[], root?: string, sessionFile?: string): LineageNameRecord | undefined {
+	const latest = (records: LineageNameRecord[]) => [...records].sort((a, b) => a.updated.localeCompare(b.updated)).at(-1);
+	if (sessionFile) {
+		const exact = latest(names.filter((record) => record.currentSession === sessionFile));
+		if (exact) return exact;
+	}
 	if (!root) return undefined;
-	return names.filter((record) => record.root === root).sort((a, b) => a.updated.localeCompare(b.updated)).at(-1);
+	const rootMatches = names.filter((record) => record.root === root);
+	const distinctRootNames = new Set(rootMatches.map((record) => record.name));
+	return distinctRootNames.size === 1 ? latest(rootMatches) : undefined;
 }
 
 function forkRecords(records: RelocationRecord[], lineage: RelocationRecord[]): RelocationRecord[] {
@@ -882,7 +889,7 @@ async function buildStatusOutput(ctx: any, showAll = false): Promise<string> {
 	const byDestination = new Map(records.map((record) => [record.destinationSession, record]));
 	const currentIndex = findCurrentIndex(records, sessionFile);
 	const currentLineage = buildLineage(records, currentIndex);
-	const currentName = latestLineageName(lineageNames, lineageRoot(currentLineage, sessionFile));
+	const currentName = latestLineageName(lineageNames, lineageRoot(currentLineage, sessionFile), sessionFile);
 	const forks = forkRecords(records, currentLineage);
 	const unrecorded = discovered.filter((path) => !byDestination.has(path));
 	const lines = [
@@ -912,7 +919,7 @@ async function buildLineageOutput(ctx: any, showFiles = false): Promise<string> 
 	const lineageNames = await readLineageNames();
 	const currentIndex = findCurrentIndex(records, sessionFile);
 	const lineage = buildLineage(records, currentIndex);
-	const currentName = latestLineageName(lineageNames, lineageRoot(lineage, sessionFile));
+	const currentName = latestLineageName(lineageNames, lineageRoot(lineage, sessionFile), sessionFile);
 	const forks = forkRecords(records, lineage);
 	const lines = [
 		"Relocation lineage",
@@ -1367,7 +1374,7 @@ export default function (pi: ExtensionAPI) {
 			const byDestination = new Map(records.map((record) => [record.destinationSession, record]));
 			const currentIndex = findCurrentIndex(records, sessionFile);
 			const currentLineage = buildLineage(records, currentIndex);
-			const currentName = latestLineageName(lineageNames, lineageRoot(currentLineage, sessionFile));
+			const currentName = latestLineageName(lineageNames, lineageRoot(currentLineage, sessionFile), sessionFile);
 			const forks = forkRecords(records, currentLineage);
 			const unrecorded = discovered.filter((path) => !byDestination.has(path));
 			const currentSessionId = ctx.sessionManager.getSessionId();
@@ -1441,7 +1448,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(["Relocation lineage named", "", `Name: ${name}`, `Root: ${shortPath(root)}`, `Metadata: ${shortPath(lineageNamesFile())}`].join("\n"), "info");
 				return;
 			}
-			const currentName = latestLineageName(lineageNames, root);
+			const currentName = latestLineageName(lineageNames, root, sessionFile);
 			const forks = forkRecords(records, lineage);
 			const lines = [
 				"Relocation lineage",
