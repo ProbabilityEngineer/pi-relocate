@@ -40,3 +40,7 @@ Clarify that `pi-relocate` records relocation/restart facts, `agent-session-stor
 - README/HOWTO boundary section exists.
 - Open restart tickets mention copy-paste commands as UX, not graph/store responsibility.
 - Store replay/export tickets remain linked to `agent-session-store`.
+
+## Slash command policy
+
+`pi-relocate` should not accumulate store and graph commands. Store rebuild/replay/index commands should move toward `/session-store ...`; graph/status visualization should move toward `/session-graph ...`; relocation should focus on `/session-relocate ...` and compatibility `/relocate*` aliases.

@@ -25,3 +25,20 @@ Reduce slash command confusion by separating session relocation from actual repo
 ## Boundary note
 
 Session relocation commands should move toward `pi-session-relocate`; filesystem repo move commands should move toward `pi-session-repo-move`; canonical store building remains `agent-session-store`/`pi-session-store`; visualization remains `pi-session-graph`.
+
+## Slash command policy
+
+Reduce top-level relocation command clutter over time. Prefer namespaced commands in the new packages:
+
+```text
+/session-relocate status
+/session-relocate lineage
+/session-relocate current <target>
+/session-relocate bucket <target>
+/session-relocate prune --dry-run
+/session-repo move <target>
+/session-repo move <source> <target>
+/session-repo move-root <old-root> <new-root>
+```
+
+Existing `/relocate*` commands should remain compatibility aliases during migration, but docs should present namespaced commands first once the split packages exist.
