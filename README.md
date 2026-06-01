@@ -59,15 +59,17 @@ cd '<target-cwd>'
 pi -c
 ```
 
-The extension still writes convenience scripts under `~/.pi/agent/relocations/`, including:
+The extension still writes convenience scripts, including:
 
 ```bash
 bash ~/.pi/agent/session-move/restart-scripts/latest.sh
 ```
 
-Prefer the direct `cd` + `pi -c` command when you want the terminal shell to remain in the target cwd after Pi exits. Running `latest.sh` starts Pi in the target cwd, but the script is a child process and cannot permanently change the original shell's cwd.
+`/move` touches the relocated current-session JSONL after copying it so Pi's `pi -c` most-recent-session lookup selects that session in the target cwd bucket without printing a long `--session` path in normal output.
 
-`--launch` opens Terminal.app running the restart script. `--shutdown` requests shutdown of the old Pi process only after a successful launch and only when explicitly supplied.
+Prefer the direct `cd` + `pi -c` command when you want the terminal shell to remain in the target cwd after Pi exits. Running `latest.sh` starts Pi in the target cwd, but the script is a child process and cannot permanently change the original shell's cwd. The script uses `exec pi --session <relocated-file>` internally for exactness; `exec` replaces only the script process, not your parent shell. Sourcing a shell function/script could change the parent shell cwd, but this extension does not emit sourceable shell code because restart scripts are meant to be safe to run as child processes.
+
+`--launch` opens a new Terminal.app window running the restart script in the target cwd. `--shutdown` requests shutdown of the old Pi process only after a successful launch and only when explicitly supplied.
 
 ## Store and manifest
 

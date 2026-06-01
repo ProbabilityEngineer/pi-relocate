@@ -1,6 +1,6 @@
 ---
 id: pr-store-relocate-boundary
-status: open
+status: closed
 deps: []
 links:
   - ../agent-session-store/.tickets/ass-graph-export-contract.md

@@ -1,6 +1,6 @@
 ---
 id: pr-session-suite-router
-status: open
+status: closed
 deps: []
 links:
   - ../pi-session-relocate

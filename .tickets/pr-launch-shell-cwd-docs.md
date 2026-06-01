@@ -1,6 +1,6 @@
 ---
 id: pr-launch-shell-cwd-docs
-status: open
+status: closed
 type: task
 priority: 3
 created: 2026-05-31T19:25:00Z

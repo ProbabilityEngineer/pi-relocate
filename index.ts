@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -1053,6 +1053,11 @@ export default function (pi: ExtensionAPI) {
 
 			const destinationFile = join(destinationDir, uniqueRelocatedName(sessionFile));
 			await writeFile(destinationFile, relocated, { encoding: "utf8", flag: "wx" });
+			// `pi -c` chooses the most recently modified JSONL in the target cwd bucket.
+			// Touch the relocated current session immediately before writing restart guidance
+			// so the compact `cd <target>; pi -c` path selects this session without exposing
+			// the long --session path in normal output.
+			await utimes(destinationFile, new Date(), new Date());
 			const name = displayName(ctx);
 			const restart = await writeRestartScripts(targetCwd, destinationFile, sessionId, name);
 			const record = {
