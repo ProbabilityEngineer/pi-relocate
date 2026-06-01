@@ -1,13 +1,13 @@
-# pi-relocate
+# pi-session-move
 
-Pi extension for moving Pi session context when projects move. It can relocate the current session or whole session buckets. It does **not** invoke the LLM.
+Pi extension for moving the current Pi session context to another working directory. It does **not** move repositories on disk and does **not** invoke the LLM.
 
-Filesystem repo moves now live in `pi-repo-move` (`/repo-move <target>`).
+Filesystem repo moves live in `pi-repo-move` (`/repo-move <target>`).
 
 ## Install
 
 ```bash
-pi install git:github.com/ProbabilityEngineer/pi-relocate
+pi install git:github.com/ProbabilityEngineer/pi-session-move
 ```
 
 Local testing:
@@ -19,45 +19,45 @@ pi -e ./index.ts
 ## Commands
 
 ```text
-/relocate [--launch] [--shutdown] [--diverge] [--verbose] [--force] <target-directory>
-/relocate-bucket [--dry-run] [--launch] [--shutdown] [--diverge] [--force] <target-directory>
-/relocate-prune [--dry-run] [--stage] [--duplicates] [--force]
-/relocate-store-replay [--crawl-sessions]
-/relocate-status [--all]
-/relocate-lineage [--files]
-/relocate-lineage --name <lineage-name>
+/move [--launch] [--shutdown] [--diverge] [--verbose] [--force] <target-directory>
+/move-status [--all]
+/move-lineage [--files]
+/move-lineage --name <lineage-name>
+/move-prune [--dry-run] [--stage] [--duplicates] [--force]
 ```
 
 ## Which command should I use?
 
-- Use `/relocate` to copy only the current live session to another cwd bucket and write a restart script.
-- Use `/relocate-bucket` when the repo/cwd already moved and all sessions in the old bucket should point at the new cwd.
-- Use `pi-repo-move`'s `/repo-move <target>` to move the current repo directory on disk and relocate its live session.
-- Use `/relocate-prune --dry-run` to preview cleanup of superseded source session files.
-- Use `/relocate-store-replay --crawl-sessions` after restoring files or rebuilding the store.
+- Use `/move` to copy the current live session to another cwd bucket and write restart guidance.
+- Use `pi-repo-move`'s `/repo-move <target>` to move the current repo directory on disk and relocate its session history.
+- Use `/move-status` to inspect local session move state without installing store/graph tooling.
+- Use `/move-lineage` to inspect or name the current session move lineage.
+- Use `/move-prune --dry-run` to preview cleanup of superseded source session files.
+
+Store rebuild/export/report workflows belong in `agent-session-store` and `pi-session-store`, not this extension.
 
 ## Move vs diverge
 
-Default mode is move semantics: destination becomes active and the old source observation is marked `superseded` and `deletion_candidate` in the canonical store. The source JSONL is not deleted during relocation.
+Default mode is move semantics: destination becomes active and the old source observation is marked `superseded` and `deletion_candidate` in the canonical store. The source JSONL is not deleted during session move.
 
 Use `--diverge` when both source and destination should remain active. Diverge records do not become prune candidates.
 
 ## Restart and launch
 
-Relocation writes scripts under:
+Session moves write scripts under:
 
 ```text
 ~/.pi/agent/relocations/
 ```
 
-Restart manually with the copy-paste command printed by `/relocate` or `/relocate-bucket`:
+Restart manually with the copy-paste command printed by `/move`:
 
 ```bash
 cd '<target-cwd>'
 pi -c
 ```
 
-Relocation still writes convenience scripts under `~/.pi/agent/relocations/`, including:
+The extension still writes convenience scripts under `~/.pi/agent/relocations/`, including:
 
 ```bash
 bash ~/.pi/agent/relocations/latest.sh
@@ -81,18 +81,16 @@ Canonical SQLite store:
 ~/.pi/agent/session-store/session-store.sqlite
 ```
 
-The manifest is append-only and is not rewritten. `/relocate-store-replay` replays manifest records into SQLite. With `--crawl-sessions`, it also indexes every `~/.pi/agent/sessions/**/*.jsonl` as an observation without inventing lineage edges.
-
-Replay understands mixed session filename formats, including base session files, modern `_relocated_<timestamp>` suffixes, and older `_relocated_<cwd-slug>_<timestamp>` suffixes. If filename parsing fails, store keys still fall back to full file path.
+The manifest is append-only and is not rewritten. This extension records session move/restart facts and keeps status, lineage, and prune self-contained for operational use. Canonical replay, rebuild, export, graphing, and reports live in `agent-session-store`, `pi-session-store`, and `pi-session-graph`.
 
 ## Pruning
 
-Pruning is separate from relocation.
+Pruning is separate from moving the current session.
 
 ```text
-/relocate-prune --dry-run
-/relocate-prune --stage
-/relocate-prune
+/move-prune --dry-run
+/move-prune --stage
+/move-prune
 ```
 
 Safe candidates require a replacement file, must not be the current live session, must not be diverge records, and must pass line/byte checkpoint checks when available.
@@ -103,18 +101,18 @@ Safe candidates require a replacement file, must not be the current live session
 ~/.pi/agent/session-archive/to-delete/<timestamp>/<bucket>/<file>.jsonl
 ```
 
-Without `--stage`, eligible files move to `~/.Trash`. Outcomes are recorded in SQLite `prune_operations`.
+Without `--stage`, eligible files move to `~/.Trash`. Outcomes are recorded in SQLite `prune_operations` when the local canonical store is available.
 
 `--duplicates` previews duplicate accumulated copies grouped by provider session id. Use `--force` with duplicate mode only after manual review.
 
 ## Status and lineage
 
-`/relocate-status` shows current tracking, manifest counts, fork counts, unrecorded relocated files, and the current lineage name when one exists. `/relocate-lineage --files` shows ancestry with source/destination paths.
+`/move-status` shows current tracking, manifest counts, fork counts, unrecorded moved files, and the current lineage name when one exists. `/move-lineage --files` shows ancestry with source/destination paths.
 
 Name the current lineage with:
 
 ```text
-/relocate-lineage --name publish-pi-packages
+/move-lineage --name publish-pi-packages
 ```
 
 Lineage names are metadata about the chain/family, not individual session names. They are stored separately from the append-only relocation manifest in:
@@ -123,17 +121,11 @@ Lineage names are metadata about the chain/family, not individual session names.
 ~/.pi/agent/relocation-lineages.jsonl
 ```
 
-This keeps raw `~/.pi/agent/relocations.jsonl` as movement evidence while allowing human-friendly labels for lineage families.
+When Pi exposes session naming APIs, `/move-lineage --name` also appends the name to the current session display info.
 
-Agents can use the read-only tool:
+## Boundaries
 
-```text
-relocate action: status/lineage
-```
-
-## Notes
-
-- Raw session JSONLs are never modified in place.
-- Relocated sessions are JSONL copies with path string replacements.
-- Compaction appends summary entries; it does not shrink the JSONL.
-- Active Git/code repos are best kept local; cloud folders are better for small archives/reference material.
+- `pi-session-move`: current session moves, restart guidance, local status/lineage/prune.
+- `pi-repo-move`: filesystem repo directory moves and repo bucket relocation.
+- `agent-session-store` / `pi-session-store`: canonical rebuild/export/report workflows.
+- `pi-session-graph`: visualization over prepared graph exports.

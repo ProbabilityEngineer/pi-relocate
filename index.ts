@@ -115,7 +115,7 @@ type LineageNameRecord = {
 	sessionId?: string;
 	created: string;
 	updated: string;
-	source: "pi-relocate";
+	source: "pi-session-move";
 };
 
 async function appendManifest(record: RelocationRecord): Promise<void> {
@@ -608,7 +608,7 @@ async function relocateSessionFile(sourceFile: string, oldCwd: string, targetCwd
 	const destinationFile = join(destinationDir, uniqueRelocatedName(sourceFile));
 	await writeFile(destinationFile, relocated, { encoding: "utf8", flag: "wx" });
 	const sessionId = parseSessionFilename(sourceFile).providerSessionId;
-	const record = { ts: new Date().toISOString(), fromCwd: oldCwd, toCwd: targetCwd, sourceSession: sourceFile, destinationSession: destinationFile, parent: sourceFile, replacements, sourceSessionId: sessionId, destinationSessionId: sessionId, mode, operationType: batchId ? "bucket_relocation" : "session_relocation", tool: "pi-relocate", batchId, sourceLinesAtEvent: original.split("\n").filter((line) => line.trim()).length, sourceBytesAtEvent: Buffer.byteLength(original) } satisfies RelocationRecord;
+	const record = { ts: new Date().toISOString(), fromCwd: oldCwd, toCwd: targetCwd, sourceSession: sourceFile, destinationSession: destinationFile, parent: sourceFile, replacements, sourceSessionId: sessionId, destinationSessionId: sessionId, mode, operationType: batchId ? "bucket_relocation" : "session_relocation", tool: "pi-session-move", batchId, sourceLinesAtEvent: original.split("\n").filter((line) => line.trim()).length, sourceBytesAtEvent: Buffer.byteLength(original) } satisfies RelocationRecord;
 	await appendManifest(record);
 	await appendStoreRecord(record, name);
 	return { record, replacements };
@@ -875,7 +875,7 @@ async function buildStatusOutput(ctx: any, showAll = false): Promise<string> {
 	const forks = forkRecords(records, currentLineage);
 	const unrecorded = discovered.filter((path) => !byDestination.has(path));
 	const lines = [
-		"Relocation status",
+		"Session move status",
 		"",
 		`Current cwd: ${shortPath(ctx.cwd ?? "")}`,
 		`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
@@ -904,7 +904,7 @@ async function buildLineageOutput(ctx: any, showFiles = false): Promise<string> 
 	const currentName = latestLineageName(lineageNames, lineageRoot(lineage, sessionFile), sessionFile);
 	const forks = forkRecords(records, lineage);
 	const lines = [
-		"Relocation lineage",
+		"Session move lineage",
 		"",
 		`Current cwd: ${shortPath(ctx.cwd ?? "")}`,
 		`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
@@ -950,13 +950,13 @@ export default function (pi: ExtensionAPI) {
 		},
 	} as any);
 
-	pi.registerCommand("relocate", {
+	pi.registerCommand("move", {
 		description:
 			"Relocate this session to another cwd by replacing old path strings; restart Pi there with pi -c. Records lineage in relocations.jsonl. No LLM call. Use --verbose for file/script details.",
 		handler: async (args, ctx) => {
 			const { target, force, diverge, launch, shutdown, verbose } = parseArgs(args);
 			if (!target) {
-				ctx.ui.notify("Usage: /relocate [--launch] [--shutdown] [--diverge] [--verbose] [--force] <target-directory>", "error");
+				ctx.ui.notify("Usage: /move [--launch] [--shutdown] [--diverge] [--verbose] [--force] <target-directory>", "error");
 				return;
 			}
 
@@ -1000,7 +1000,7 @@ export default function (pi: ExtensionAPI) {
 
 			const original = await readFile(sessionFile, "utf8").catch((error) => {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-					throw new Error(["Current Pi session file is missing; cannot relocate this live process.", "", `Missing: ${sessionFile}`, "", "Try /session, /relocate-lineage --files, or start a fresh Pi session in the target directory."].join("\n"));
+					throw new Error(["Current Pi session file is missing; cannot relocate this live process.", "", `Missing: ${sessionFile}`, "", "Try /session, /move-lineage --files, or start a fresh Pi session in the target directory."].join("\n"));
 				}
 				throw error;
 			});
@@ -1034,7 +1034,7 @@ export default function (pi: ExtensionAPI) {
 				destinationSessionId: sessionId,
 				mode: diverge ? "diverge" : "move",
 				operationType: "session_relocation",
-				tool: "pi-relocate",
+				tool: "pi-session-move",
 				sourceLinesAtEvent: original.split("\n").filter((line) => line.trim()).length,
 				sourceBytesAtEvent: Buffer.byteLength(original),
 			} satisfies RelocationRecord;
@@ -1083,95 +1083,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("relocate-bucket", {
-		description: "Relocate all session files in the current cwd bucket to another cwd. Originals are not deleted; move mode marks them superseded in the store. Use --dry-run first.",
-		handler: async (args, ctx) => {
-			const { target, force, diverge, dryRun, launch, shutdown } = parseArgs(args);
-			if (!target) {
-				ctx.ui.notify("Usage: /relocate-bucket [--dry-run] [--launch] [--shutdown] [--diverge] [--force] <target-directory>", "error");
-				return;
-			}
-			const oldCwd = normalizeDir(ctx.cwd);
-			const targetCwd = normalizeDirArg(target, ctx.cwd);
-			try {
-				if (!(await ensureTargetDirectory(targetCwd, force, dryRun, ctx.ui.confirm))) return;
-			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				return;
-			}
-			const files = await sessionFilesInBucket(oldCwd);
-			if (!files.length) {
-				ctx.ui.notify(`No session files found in current bucket: ${sessionBucketName(oldCwd)}`, "warning");
-				return;
-			}
-			const mode = diverge ? "diverge" : "move";
-			const preview = [
-				"Bucket relocation",
-				"",
-				`From: ${oldCwd}`,
-				`To:   ${targetCwd}`,
-				`Mode: ${mode === "diverge" ? "diverge; source remains active" : "move; source observations marked superseded in store"}`,
-				`Sessions: ${files.length}`,
-				"",
-				...files.slice(0, 20).map((file) => `- ${shortPath(file)}`),
-				...(files.length > 20 ? [`- ... ${files.length - 20} more`] : []),
-			].join("\n");
-			if (dryRun) {
-				ctx.ui.notify(`${preview}\n\nDry run only; no files or records were written.`, "info");
-				return;
-			}
-			if (!force) {
-				const ok = await ctx.ui.confirm("Relocate all sessions in bucket?", `${preview}\n\nOriginals will not be deleted.`);
-				if (!ok) return;
-			}
-			await ctx.waitForIdle();
-			const batchId = hashId("batch", new Date().toISOString(), oldCwd, targetCwd, String(files.length));
-			let ok = 0;
-			let failed = 0;
-			let replacements = 0;
-			let restart: RestartInfo | undefined;
-			let launchWarning: string | undefined;
-			const currentSessionFile = ctx.sessionManager?.getSessionFile?.();
-			const failures: string[] = [];
-			for (const file of files) {
-				try {
-					const result = await relocateSessionFile(file, oldCwd, targetCwd, mode, batchId, displayName(ctx));
-					ok++;
-					replacements += result.replacements;
-					if (file === currentSessionFile) restart = await writeRestartScripts(targetCwd, result.record.destinationSession, ctx.sessionManager?.getSessionId?.(), displayName(ctx));
-				} catch (error) {
-					failed++;
-					failures.push(`${shortPath(file)}: ${error instanceof Error ? error.message : String(error)}`);
-				}
-			}
-			if (launch) {
-				if (!restart) launchWarning = "No restart script was written for the current live session in this bucket.";
-				else {
-					try {
-						await launchInTerminal(restart.latestFile);
-						if (shutdown) await ctx.shutdown?.();
-					} catch (error) {
-						launchWarning = `Terminal launch failed: ${error instanceof Error ? error.message : String(error)}`;
-					}
-				}
-			}
-			ctx.ui.notify([
-				"Bucket relocation complete",
-				"",
-				`Batch: ${batchId}`,
-				`Written: ${ok}`,
-				`Failed: ${failed}`,
-				`Total direct replacements: ${replacements}`,
-				"Original files were not deleted.",
-				...(mode === "move" ? ["Source observations were marked superseded/deletion-review candidates in the canonical store."] : ["Diverge mode: source observations remain active."]),
-				...(restart ? ["", ...restartCommandBlock(restart.targetCwd), "", "Restart script still written for convenience:", restart.scriptFile, "Run script with:", `bash ${shellQuote(restart.latestFile)}`] : []),
-				...(launch ? ["", launchWarning ? launchWarning : `Launched in Terminal.app${shutdown ? " and requested shutdown of this Pi process" : ""}.`] : []),
-				...(failures.length ? ["", "Failures:", ...failures.slice(0, 10)] : []),
-			].join("\n"), failed ? "warning" : "info");
-		},
-	});
-
-	pi.registerCommand("relocate-prune", {
+	pi.registerCommand("move-prune", {
 		description: "Safely move superseded relocation source session files to Trash. Use --dry-run first.",
 		handler: async (args, ctx) => {
 			const dryRun = hasFlag(args, "--dry-run") || hasFlag(args, "-n");
@@ -1184,7 +1096,7 @@ export default function (pi: ExtensionAPI) {
 			const legacy = candidates.filter((c) => c.category === "legacy-review" && !(duplicates && force));
 			const unsafe = candidates.filter((c) => c.category === "unsafe");
 			const preview = [
-				"Relocation prune candidates",
+				"Session move prune candidates",
 				"",
 				`Eligible: ${eligible.length}`,
 				`Legacy/manual review: ${legacy.length}`,
@@ -1224,30 +1136,11 @@ export default function (pi: ExtensionAPI) {
 					failures.push(`${shortPath(candidate.sourcePath)}: ${reason}`);
 				}
 			}
-			ctx.ui.notify(["Relocation prune complete", "", `${stage ? "Staged" : "Trashed"}: ${trashed}`, ...(stage ? [`Stage batch: ${join(defaultAgentDir(), "session-archive", "to-delete", stageBatch)}`] : []), `Failed: ${failed}`, `Legacy/manual review skipped: ${legacy.length}`, `Unsafe skipped: ${unsafe.length}`, ...(failures.length ? ["", "Failures:", ...failures.slice(0, 10)] : [])].join("\n"), failed ? "warning" : "info");
+			ctx.ui.notify(["Session move prune complete", "", `${stage ? "Staged" : "Trashed"}: ${trashed}`, ...(stage ? [`Stage batch: ${join(defaultAgentDir(), "session-archive", "to-delete", stageBatch)}`] : []), `Failed: ${failed}`, `Legacy/manual review skipped: ${legacy.length}`, `Unsafe skipped: ${unsafe.length}`, ...(failures.length ? ["", "Failures:", ...failures.slice(0, 10)] : [])].join("\n"), failed ? "warning" : "info");
 		},
 	});
 
-	pi.registerCommand("relocate-store-replay", {
-		description: "Replay relocations.jsonl into the canonical SQLite session store. Add --crawl-sessions to index all session JSONLs. Does not mutate session JSONLs.",
-		handler: async (args, ctx) => {
-			const result = await replayManifestToStore();
-			const crawl = hasFlag(args, "--crawl-sessions") ? await crawlSessionFiles() : undefined;
-			ctx.ui.notify([
-				"Relocation store replay complete",
-				"",
-				`Manifest: ${shortPath(manifestFile())}`,
-				`Store: ${shortPath(storeFile())}`,
-				`Manifest records written/updated: ${result.ok}`,
-				`Manifest failures: ${result.failed}`,
-				...(crawl ? [`Crawl indexed: ${crawl.indexed}`, `Crawl failed: ${crawl.failed}`] : []),
-				"",
-				"Session JSONLs and relocations.jsonl were not modified.",
-			].join("\n"), result.failed || crawl?.failed ? "warning" : "info");
-		},
-	});
-
-	pi.registerCommand("relocate-status", {
+	pi.registerCommand("move-status", {
 		description: "Show compact relocation status. Use --all for full details.",
 		handler: async (args, ctx) => {
 			const showAll = hasFlag(args, "--all");
@@ -1263,7 +1156,7 @@ export default function (pi: ExtensionAPI) {
 			const unrecorded = discovered.filter((path) => !byDestination.has(path));
 			const currentSessionId = ctx.sessionManager.getSessionId();
 			const lines = [
-				"Relocation status",
+				"Session move status",
 				"",
 				`Current cwd: ${shortPath(ctx.cwd)}`,
 				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
@@ -1302,15 +1195,15 @@ export default function (pi: ExtensionAPI) {
 					for (const path of unrecorded) lines.push(`- ${shortPath(path)}`);
 				}
 			} else {
-				lines.push("", "Use /relocate-lineage for the current chain; /relocate-status --all for full details.");
+				lines.push("", "Use /move-lineage for the current chain; /move-status --all for full details.");
 			}
 
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 
-	pi.registerCommand("relocate-lineage", {
-		description: "Show or name the current relocation ancestry chain. Use --name <name>; --files includes session paths.",
+	pi.registerCommand("move-lineage", {
+		description: "Show or name the current session move ancestry chain. Use --name <name>; --files includes session paths.",
 		handler: async (args, ctx) => {
 			const words = parseWords(args);
 			const showFiles = words.includes("--files");
@@ -1328,11 +1221,11 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				const now = new Date().toISOString();
-				await appendLineageName({ type: "lineage_named", root, name, currentSession: sessionFile, sessionId: ctx.sessionManager.getSessionId(), created: now, updated: now, source: "pi-relocate" });
+				await appendLineageName({ type: "lineage_named", root, name, currentSession: sessionFile, sessionId: ctx.sessionManager.getSessionId(), created: now, updated: now, source: "pi-session-move" });
 				const sessionManager = ctx.sessionManager as { appendSessionInfo?: (name: string) => string };
 				const sessionNameEntry = typeof sessionManager.appendSessionInfo === "function" ? sessionManager.appendSessionInfo(name) : undefined;
 				ctx.ui.notify([
-					"Relocation lineage named",
+					"Session move lineage named",
 					"",
 					`Name: ${name}`,
 					...(sessionNameEntry ? [`Pi session display name updated: ${name}`] : ["Pi session display name was not updated; this Pi version does not expose appendSessionInfo to extensions."]),
@@ -1344,7 +1237,7 @@ export default function (pi: ExtensionAPI) {
 			const currentName = latestLineageName(lineageNames, root, sessionFile);
 			const forks = forkRecords(records, lineage);
 			const lines = [
-				"Relocation lineage",
+				"Session move lineage",
 				"",
 				`Current cwd: ${shortPath(ctx.cwd)}`,
 				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,

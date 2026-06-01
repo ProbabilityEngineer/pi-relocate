@@ -1,13 +1,13 @@
 {
-  "name": "pi-relocate",
+  "name": "pi-session-move",
   "version": "0.1.0",
   "private": false,
-  "description": "Pi extension that relocates the current session JSONL to another working directory without invoking the LLM.",
+  "description": "Pi extension that moves the current session context to another working directory without invoking the LLM.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
-    "relocate",
+    "move",
     "session"
   ],
   "dependencies": {
