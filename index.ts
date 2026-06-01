@@ -96,7 +96,7 @@ type RelocationRecord = {
 	destinationSessionId?: string;
 	mode?: "move" | "diverge";
 	operationType?: "session_relocation" | "bucket_relocation" | "repo_move" | "repo_root_move" | string;
-	tool?: "pi-relocate" | "pi-move" | "pi-move-repo" | string;
+	tool?: "pi-session-move" | "pi-relocate" | "pi-move" | "pi-move-repo" | string;
 	sourceRepo?: string;
 	targetRepo?: string;
 	batchId?: string;
@@ -183,8 +183,8 @@ async function appendStoreRecord(record: RelocationRecord, name?: string): Promi
 	const db = new DatabaseSync(storeFile());
 	try {
 		initStore(db);
-		const sourceId = "source_pi_relocate_manifest";
-		db.prepare("INSERT OR IGNORE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(sourceId, "pi", "relocation_manifest", manifestFile(), "Pi relocation manifest", null, null, "{}");
+		const sourceId = "source_pi_session_move_manifest";
+		db.prepare("INSERT OR IGNORE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(sourceId, "pi", "relocation_manifest", manifestFile(), "Pi session move manifest", null, null, "{}");
 		const upsertSession = db.prepare("INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		const upsertObs = db.prepare("INSERT OR REPLACE INTO session_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		const upsertEdge = db.prepare("INSERT OR REPLACE INTO edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -205,12 +205,12 @@ async function appendStoreRecord(record: RelocationRecord, name?: string): Promi
 		const mode = record.mode ?? "move";
 		const confidence = inferredLegacyMove ? "inferred-from-legacy-manifest" : "authoritative";
 		const edgeId = hashId("edge", record.ts, record.sourceSession, record.destinationSession);
-		upsertEdge.run(edgeId, sourceSessionId, destSessionId, mode === "diverge" ? "diverge" : "relocation", record.ts, sourceObsId, destObsId, confidence, "pi-relocate", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode, batchId: record.batchId, sourceLinesAtEvent: record.sourceLinesAtEvent, sourceBytesAtEvent: record.sourceBytesAtEvent, inferredLegacyMove }));
-		if (record.batchId) upsertBatch.run(record.batchId, "bucket_relocation", record.fromCwd, record.toCwd, record.ts, "pi-relocate", "applied", JSON.stringify({ mode, inferredLegacyMove }));
+		upsertEdge.run(edgeId, sourceSessionId, destSessionId, mode === "diverge" ? "diverge" : "relocation", record.ts, sourceObsId, destObsId, confidence, "pi-session-move", JSON.stringify({ fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode, batchId: record.batchId, sourceLinesAtEvent: record.sourceLinesAtEvent, sourceBytesAtEvent: record.sourceBytesAtEvent, inferredLegacyMove }));
+		if (record.batchId) upsertBatch.run(record.batchId, "bucket_relocation", record.fromCwd, record.toCwd, record.ts, "pi-session-move", "applied", JSON.stringify({ mode, inferredLegacyMove }));
 		if (mode === "move") {
-			const markReason = inferredLegacyMove ? "legacy relocation manifest record inferred as move; manual review required" : "relocated by pi-relocate move semantics";
-			upsertMark.run(hashId("mark", sourceObsId, "superseded", destObsId, record.ts), sourceObsId, "superseded", markReason, destObsId, "pi-relocate", record.ts, confidence, 1, JSON.stringify({ batchId: record.batchId, inferredLegacyMove }));
-			upsertMark.run(hashId("mark", sourceObsId, "deletion_candidate", destObsId, record.ts), sourceObsId, "deletion_candidate", "old copy after relocation; requires manual review before deletion", destObsId, "pi-relocate", record.ts, confidence, 1, JSON.stringify({ batchId: record.batchId, inferredLegacyMove }));
+			const markReason = inferredLegacyMove ? "legacy relocation manifest record inferred as move; manual review required" : "moved by pi-session-move semantics";
+			upsertMark.run(hashId("mark", sourceObsId, "superseded", destObsId, record.ts), sourceObsId, "superseded", markReason, destObsId, "pi-session-move", record.ts, confidence, 1, JSON.stringify({ batchId: record.batchId, inferredLegacyMove }));
+			upsertMark.run(hashId("mark", sourceObsId, "deletion_candidate", destObsId, record.ts), sourceObsId, "deletion_candidate", "old copy after session move; requires manual review before deletion", destObsId, "pi-session-move", record.ts, confidence, 1, JSON.stringify({ batchId: record.batchId, inferredLegacyMove }));
 		}
 		upsertLabel.run(hashId("label", sourceSessionId, "cwd", record.fromCwd), "session", sourceSessionId, "cwd", record.fromCwd, null, null, "authoritative", sourceId, null, "{}");
 		upsertLabel.run(hashId("label", destSessionId, "cwd", record.toCwd), "session", destSessionId, "cwd", record.toCwd, null, null, "authoritative", sourceId, null, "{}");
@@ -417,7 +417,7 @@ function recordPruneOperation(candidate: PruneCandidate, status: string, action:
 	const db = new DatabaseSync(storeFile());
 	try {
 		initStore(db);
-		db.prepare("INSERT OR REPLACE INTO prune_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(hashId("prune", candidate.sourcePath, new Date().toISOString()), new Date().toISOString(), candidate.sourcePath, candidate.replacementPath ?? null, action, status, reason, trashPath ?? null, candidate.currentLines ?? null, candidate.eventLines ?? null, candidate.currentBytes ?? null, candidate.eventBytes ?? null, "pi-relocate", JSON.stringify({ confidence: candidate.confidence, category: candidate.category }));
+		db.prepare("INSERT OR REPLACE INTO prune_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(hashId("prune", candidate.sourcePath, new Date().toISOString()), new Date().toISOString(), candidate.sourcePath, candidate.replacementPath ?? null, action, status, reason, trashPath ?? null, candidate.currentLines ?? null, candidate.eventLines ?? null, candidate.currentBytes ?? null, candidate.eventBytes ?? null, "pi-session-move", JSON.stringify({ confidence: candidate.confidence, category: candidate.category }));
 	} finally { db.close(); }
 }
 
@@ -931,13 +931,13 @@ async function buildLineageOutput(ctx: any, showFiles = false): Promise<string> 
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "relocate",
-		label: "Relocate",
-		description: "Pi session relocation status and lineage: status/lineage.",
-		promptSnippet: "Relocate routing: use relocate status/lineage when checking whether the current Pi session is an older relocated branch or latest lineage leaf.",
+		name: "session_move",
+		label: "Session Move",
+		description: "Pi session move status and lineage: status/lineage.",
+		promptSnippet: "Session-move routing: use session_move status/lineage when checking whether the current Pi session is an older moved branch or latest lineage leaf.",
 		promptGuidelines: [
-			"Use relocate lineage to answer whether the current session has descendants, is a latest leaf, or should continue from a newer relocated session.",
-			"Relocate status/lineage are read-only; use slash /relocate for the user-confirmed relocation operation.",
+			"Use session_move lineage to answer whether the current session has descendants, is a latest leaf, or should continue from a newer moved session.",
+			"Session move status/lineage are read-only; use slash /move for the user-confirmed session move operation.",
 		],
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("status"), Type.Literal("lineage")]),
