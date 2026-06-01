@@ -26,6 +26,7 @@ pi -e ./index.ts
 /relocate-store-replay [--crawl-sessions]
 /relocate-status [--all]
 /relocate-lineage [--files]
+/relocate-lineage --name <lineage-name>
 ```
 
 ## Which command should I use?
@@ -102,7 +103,21 @@ Without `--stage`, eligible files move to `~/.Trash`. Outcomes are recorded in S
 
 ## Status and lineage
 
-`/relocate-status` shows current tracking, manifest counts, fork counts, and unrecorded relocated files. `/relocate-lineage --files` shows ancestry with source/destination paths.
+`/relocate-status` shows current tracking, manifest counts, fork counts, unrecorded relocated files, and the current lineage name when one exists. `/relocate-lineage --files` shows ancestry with source/destination paths.
+
+Name the current lineage with:
+
+```text
+/relocate-lineage --name publish-pi-packages
+```
+
+Lineage names are metadata about the chain/family, not individual session names. They are stored separately from the append-only relocation manifest in:
+
+```text
+~/.pi/agent/relocation-lineages.jsonl
+```
+
+This keeps raw `~/.pi/agent/relocations.jsonl` as movement evidence while allowing human-friendly labels for lineage families.
 
 Agents can use the read-only tool:
 

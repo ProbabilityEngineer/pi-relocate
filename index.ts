@@ -62,6 +62,10 @@ function manifestFile(): string {
 	return join(defaultAgentDir(), "relocations.jsonl");
 }
 
+function lineageNamesFile(): string {
+	return join(defaultAgentDir(), "relocation-lineages.jsonl");
+}
+
 type RelocationRecord = {
 	ts: string;
 	fromCwd: string;
@@ -80,8 +84,26 @@ type RelocationRecord = {
 	sourceBytesAtEvent?: number;
 };
 
+type LineageNameRecord = {
+	type: "lineage_named";
+	root: string;
+	name: string;
+	description?: string;
+	currentSession?: string;
+	sessionId?: string;
+	created: string;
+	updated: string;
+	source: "pi-relocate";
+};
+
 async function appendManifest(record: RelocationRecord): Promise<void> {
 	const path = manifestFile();
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "a" });
+}
+
+async function appendLineageName(record: LineageNameRecord): Promise<void> {
+	const path = lineageNamesFile();
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "a" });
 }
@@ -498,6 +520,20 @@ async function readManifest(): Promise<RelocationRecord[]> {
 	}
 }
 
+async function readLineageNames(): Promise<LineageNameRecord[]> {
+	try {
+		const raw = await readFile(lineageNamesFile(), "utf8");
+		return raw
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as LineageNameRecord)
+			.filter((record) => record.type === "lineage_named" && Boolean(record.root) && Boolean(record.name));
+	} catch {
+		return [];
+	}
+}
+
 async function sessionFilesInBucket(cwd: string): Promise<string[]> {
 	const dir = join(defaultAgentDir(), "sessions", sessionBucketName(cwd));
 	const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -654,6 +690,15 @@ function buildLineage(records: RelocationRecord[], currentIndex: number): Reloca
 	return lineage;
 }
 
+function lineageRoot(lineage: RelocationRecord[], sessionFile?: string): string | undefined {
+	return lineage[0]?.sourceSession ?? sessionFile;
+}
+
+function latestLineageName(names: LineageNameRecord[], root?: string): LineageNameRecord | undefined {
+	if (!root) return undefined;
+	return names.filter((record) => record.root === root).sort((a, b) => a.updated.localeCompare(b.updated)).at(-1);
+}
+
 function forkRecords(records: RelocationRecord[], lineage: RelocationRecord[]): RelocationRecord[] {
 	const chainSources = new Set(lineage.map((record) => record.sourceSession));
 	const chainDestinations = new Set(lineage.map((record) => record.destinationSession));
@@ -806,10 +851,12 @@ function formatHop(record: RelocationRecord, index: number, currentSession?: str
 async function buildStatusOutput(ctx: any, showAll = false): Promise<string> {
 	const sessionFile = ctx.sessionManager?.getSessionFile?.();
 	const records = await readManifest();
+	const lineageNames = await readLineageNames();
 	const discovered = await findRelocatedSessions();
 	const byDestination = new Map(records.map((record) => [record.destinationSession, record]));
 	const currentIndex = findCurrentIndex(records, sessionFile);
 	const currentLineage = buildLineage(records, currentIndex);
+	const currentName = latestLineageName(lineageNames, lineageRoot(currentLineage, sessionFile));
 	const forks = forkRecords(records, currentLineage);
 	const unrecorded = discovered.filter((path) => !byDestination.has(path));
 	const lines = [
@@ -818,6 +865,7 @@ async function buildStatusOutput(ctx: any, showAll = false): Promise<string> {
 		`Current cwd: ${shortPath(ctx.cwd ?? "")}`,
 		`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 		`Current session id: ${ctx.sessionManager?.getSessionId?.() ?? "unknown"}`,
+		`Current lineage name: ${currentName?.name ?? "(unnamed)"}`,
 		`Current session tracked: ${currentIndex >= 0 ? `yes (#${currentIndex + 1})` : "no"}`,
 		...movedWarningLines(sessionFile),
 		`Manifest records: ${records.length}`,
@@ -835,8 +883,10 @@ async function buildStatusOutput(ctx: any, showAll = false): Promise<string> {
 async function buildLineageOutput(ctx: any, showFiles = false): Promise<string> {
 	const sessionFile = ctx.sessionManager?.getSessionFile?.();
 	const records = await readManifest();
+	const lineageNames = await readLineageNames();
 	const currentIndex = findCurrentIndex(records, sessionFile);
 	const lineage = buildLineage(records, currentIndex);
+	const currentName = latestLineageName(lineageNames, lineageRoot(lineage, sessionFile));
 	const forks = forkRecords(records, lineage);
 	const lines = [
 		"Relocation lineage",
@@ -844,6 +894,7 @@ async function buildLineageOutput(ctx: any, showFiles = false): Promise<string> 
 		`Current cwd: ${shortPath(ctx.cwd ?? "")}`,
 		`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 		`Current session id: ${ctx.sessionManager?.getSessionId?.() ?? "unknown"}`,
+		`Lineage name: ${currentName?.name ?? "(unnamed)"}`,
 		...movedWarningLines(sessionFile),
 		"",
 		"Current position:",
@@ -1285,10 +1336,12 @@ export default function (pi: ExtensionAPI) {
 			const showAll = hasFlag(args, "--all");
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const records = await readManifest();
+			const lineageNames = await readLineageNames();
 			const discovered = await findRelocatedSessions();
 			const byDestination = new Map(records.map((record) => [record.destinationSession, record]));
 			const currentIndex = findCurrentIndex(records, sessionFile);
 			const currentLineage = buildLineage(records, currentIndex);
+			const currentName = latestLineageName(lineageNames, lineageRoot(currentLineage, sessionFile));
 			const forks = forkRecords(records, currentLineage);
 			const unrecorded = discovered.filter((path) => !byDestination.has(path));
 			const currentSessionId = ctx.sessionManager.getSessionId();
@@ -1298,6 +1351,7 @@ export default function (pi: ExtensionAPI) {
 				`Current cwd: ${shortPath(ctx.cwd)}`,
 				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 				`Current session id: ${currentSessionId}`,
+				`Current lineage name: ${currentName?.name ?? "(unnamed)"}`,
 				`Current session tracked: ${currentIndex >= 0 ? `yes (#${currentIndex + 1})` : "no"}`,
 				...movedWarningLines(sessionFile),
 				`Manifest records: ${records.length}`,
@@ -1339,13 +1393,29 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("relocate-lineage", {
-		description: "Show the current relocation ancestry chain. Use --files to include session paths.",
+		description: "Show or name the current relocation ancestry chain. Use --name <name>; --files includes session paths.",
 		handler: async (args, ctx) => {
-			const showFiles = hasFlag(args, "--files");
+			const words = parseWords(args);
+			const showFiles = words.includes("--files");
+			const nameFlag = words.indexOf("--name");
+			const name = nameFlag >= 0 ? words.slice(nameFlag + 1).filter((word) => !word.startsWith("--")).join(" ").trim() : undefined;
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const records = await readManifest();
+			const lineageNames = await readLineageNames();
 			const currentIndex = findCurrentIndex(records, sessionFile);
 			const lineage = buildLineage(records, currentIndex);
+			const root = lineageRoot(lineage, sessionFile);
+			if (name) {
+				if (!root) {
+					ctx.ui.notify("Cannot name an ephemeral lineage with no session file.", "error");
+					return;
+				}
+				const now = new Date().toISOString();
+				await appendLineageName({ type: "lineage_named", root, name, currentSession: sessionFile, sessionId: ctx.sessionManager.getSessionId(), created: now, updated: now, source: "pi-relocate" });
+				ctx.ui.notify(["Relocation lineage named", "", `Name: ${name}`, `Root: ${shortPath(root)}`, `Metadata: ${shortPath(lineageNamesFile())}`].join("\n"), "info");
+				return;
+			}
+			const currentName = latestLineageName(lineageNames, root);
 			const forks = forkRecords(records, lineage);
 			const lines = [
 				"Relocation lineage",
@@ -1353,6 +1423,7 @@ export default function (pi: ExtensionAPI) {
 				`Current cwd: ${shortPath(ctx.cwd)}`,
 				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
 				`Current session id: ${ctx.sessionManager.getSessionId()}`,
+				`Lineage name: ${currentName?.name ?? "(unnamed)"}`,
 				...movedWarningLines(sessionFile),
 				"",
 				"Current position:",
