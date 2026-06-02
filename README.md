@@ -163,11 +163,13 @@ From the source checkout, the equivalent npm script is:
 npm run lineages
 ```
 
-The output shows one compact row per lineage with Pi's own resume message count, age, and resume cwd. Use `--files` to include full session paths. To print the shell commands for a row:
+The output shows one compact row per lineage with Pi's own resume message count, age, and resume cwd, then prompts for a row number and launches `pi --session` in that cwd. Use `--files` to include full session paths.
+
+To print shell commands instead of launching Pi:
 
 ```bash
-pil 1
-# or: npm run lineages -- 1
+pil --print 1
+# or: npm run lineages -- --print 1
 ```
 
 ## Legacy evidence migration

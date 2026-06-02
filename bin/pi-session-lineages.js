@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -37,6 +39,16 @@ function toResumeSessionInfo(session, cwdBySession) {
 	return { path: session.path, messages: session.messageCount, mtimeMs: session.modified.getTime(), cwd: cwdBySession.get(session.path) ?? session.cwd };
 }
 
+function printLaunch(row) {
+	console.log(`cd ${JSON.stringify(row.best.cwd ?? ".")}`);
+	console.log(`pi --session ${JSON.stringify(row.best.path)}`);
+}
+
+async function launch(row) {
+	const child = spawn("pi", ["--session", row.best.path], { cwd: row.best.cwd ?? process.cwd(), stdio: "inherit" });
+	await new Promise((resolve) => child.on("exit", (code) => resolve(process.exit(code ?? 0))));
+}
+
 function descendants(root, records) {
 	const out = new Set([root]);
 	let changed = true;
@@ -55,7 +67,9 @@ function descendants(root, records) {
 }
 
 async function main() {
-	const showFiles = process.argv.includes("--files") || process.argv.includes("--verbose");
+	const args = process.argv.slice(2);
+	const showFiles = args.includes("--files") || args.includes("--verbose");
+	const printOnly = args.includes("--print") || args.includes("--command");
 	const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
 	const limit = limitArg ? Number(limitArg.slice("--limit=".length)) : undefined;
 	const relocationFiles = [
@@ -88,18 +102,27 @@ async function main() {
 		if (best) rows.push({ name: lineage.name, best, count: infos.length });
 	}
 	rows.sort((a, b) => b.best.messages - a.best.messages || b.best.mtimeMs - a.best.mtimeMs);
-	const selected = Number(process.argv.find((arg) => /^\d+$/.test(arg)) ?? 0);
+	const selected = Number(args.find((arg) => /^\d+$/.test(arg)) ?? 0);
 	if (selected > 0) {
 		const row = rows[selected - 1];
 		if (!row) throw new Error(`No lineage row ${selected}`);
-		console.log(`cd ${JSON.stringify(row.best.cwd ?? ".")}`);
-		console.log(`pi --session ${JSON.stringify(row.best.path)}`);
+		if (printOnly || !process.stdout.isTTY) printLaunch(row);
+		else await launch(row);
 		return;
 	}
 	console.log("#  Lineage                         Msgs  Age  Cwd");
 	for (const [index, row] of rows.slice(0, limit).entries()) {
 		console.log(`${String(index + 1).padStart(2)} ${row.name.padEnd(30).slice(0, 30)} ${String(row.best.messages).padStart(5)} ${formatAge(row.best.mtimeMs).padStart(4)}  ${shortPath(row.best.cwd)}`);
 		if (showFiles) console.log(`   session: ${shortPath(row.best.path)}`);
+	}
+	if (process.stdin.isTTY && process.stdout.isTTY) {
+		const rl = createInterface({ input: process.stdin, output: process.stdout });
+		const answer = (await rl.question("Open lineage #: ")).trim();
+		rl.close();
+		if (!answer) return;
+		const row = rows[Number(answer) - 1];
+		if (!row) throw new Error(`No lineage row ${answer}`);
+		await launch(row);
 	}
 }
 
