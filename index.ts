@@ -787,6 +787,24 @@ function forkRecords(records: RelocationRecord[], lineage: RelocationRecord[]): 
 	);
 }
 
+function currentSessionLineageName(names: LineageNameRecord[], sessionFile?: string): LineageNameRecord | undefined {
+	if (!sessionFile) return undefined;
+	return [...names].filter((record) => record.currentSession === sessionFile).sort((a, b) => a.updated.localeCompare(b.updated)).at(-1);
+}
+
+function splitNameWarningLines(lineageNames: LineageNameRecord[], sessionFile: string | undefined, forks: RelocationRecord[], currentName: LineageNameRecord | undefined): string[] {
+	if (!sessionFile || !forks.length) return [];
+	if (currentSessionLineageName(lineageNames, sessionFile)) return [];
+	const name = currentName?.name ?? "(unnamed)";
+	return [
+		"",
+		"Lineage split naming:",
+		`- This lineage has ${forks.length} recorded fork${forks.length === 1 ? "" : "s"}; the current branch is sharing pinned lineage name ${name} from an ancestor/root.`,
+		"- Give this branch its own pinned name if it is now separate work:",
+		"  /move-lineage --name <new-branch-name>",
+	];
+}
+
 function childRecords(records: RelocationRecord[], sessionFile?: string): RelocationRecord[] {
 	if (!sessionFile) return [];
 	return records.filter((record) => record.sourceSession === sessionFile || record.parent === sessionFile);
@@ -1227,6 +1245,7 @@ export default function (pi: ExtensionAPI) {
 				lines.push("", "Forks touching current lineage:");
 				for (const [index, record] of forks.slice(-5).entries()) lines.push(...formatHop(record, index + 1, sessionFile, false));
 			}
+			lines.push(...splitNameWarningLines(lineageNames, sessionFile, forks, currentName));
 
 			if (showAll) {
 				lines.push("", "All recorded relocations:");
@@ -1303,6 +1322,7 @@ export default function (pi: ExtensionAPI) {
 				lines.push("", "Forks from this chain:");
 				for (const [index, record] of forks.entries()) lines.push(...formatHop(record, index + 1, sessionFile, showFiles));
 			}
+			lines.push(...splitNameWarningLines(lineageNames, sessionFile, forks, currentName));
 
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
