@@ -20,9 +20,7 @@ pi -e ./index.ts
 
 ```text
 /move [--launch] [--shutdown] [--diverge] [--verbose] [--force] <target-directory>
-/move-status [--all]
-/move-lineage [--files]
-/move-lineage --name <lineage-name>
+/lineage-name <lineage-name>
 /move-prune [--dry-run] [--stage] [--duplicates] [--force]
 ```
 
@@ -30,11 +28,10 @@ pi -e ./index.ts
 
 - Use `/move` to copy the current live session to another cwd bucket and write restart guidance.
 - Use `pi-repo-move`'s `/repo-move <target>` to move the current repo directory on disk and relocate its session history.
-- Use `/move-status` to inspect local session move state without installing store/graph tooling.
-- Use `/move-lineage` to inspect or name the current session move lineage.
+- Use `/lineage-name <name>` to pin a durable name for the current lineage branch.
 - Use `/move-prune --dry-run` to preview cleanup of superseded source session files.
 
-Store rebuild/export/report workflows belong in `agent-session-store` and `pi-session-store`, not this extension.
+Use `pi-session-graph`'s `/session-status` and `/session-lineage` for read-only session status/lineage. Store rebuild/export/report workflows belong in the `agent-session-store` CLI, not this extension.
 
 ## Move vs diverge
 
@@ -127,14 +124,12 @@ Without `--stage`, eligible files move to `~/.Trash`. Outcomes are recorded in S
 
 `--duplicates` previews duplicate accumulated copies grouped by provider session id. Use `--force` with duplicate mode only after manual review.
 
-## Status and lineage
+## Lineage names
 
-`/move-status` shows current tracking, manifest counts, fork counts, unrecorded moved files, and the current lineage name when one exists. `/move-lineage --files` shows ancestry with source/destination paths.
-
-Name the current lineage with:
+Name the current lineage branch with:
 
 ```text
-/move-lineage --name publish-pi-packages
+/lineage-name publish-pi-packages
 ```
 
 Lineage names are pinned metadata about the chain/family, not raw proof of identity and not merely an individual session filename. They are stored separately from the append-only session-move manifest in:
@@ -143,7 +138,7 @@ Lineage names are pinned metadata about the chain/family, not raw proof of ident
 ~/.pi/agent/session-move/manifests/relocation-lineages.jsonl
 ```
 
-When Pi exposes session naming APIs, `/move-lineage --name` also appends the pinned lineage name to the current session display info so the durable lineage label and Pi's current-session display name stay synced.
+When Pi exposes session naming APIs, `/lineage-name` also appends the pinned lineage name to the current session display info so the durable lineage label and Pi's current-session display name stay synced. If no pinned lineage name exists, session moves may auto-pin a usable current Pi session display name; when a lineage branches, use `/lineage-name <branch-name>` to pin the branch-specific name.
 
 ## Legacy evidence copy
 

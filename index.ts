@@ -720,12 +720,12 @@ function parseArgs(args: string): { target?: string; force: boolean; diverge: bo
 	let verbose = false;
 	const positional: string[] = [];
 	for (const value of parseWords(args)) {
-		if (value === "--force" || value === "-f") force = true;
+		if (value === "--force") force = true;
 		else if (value === "--diverge") diverge = true;
-		else if (value === "--dry-run" || value === "-n") dryRun = true;
+		else if (value === "--dry-run") dryRun = true;
 		else if (value === "--launch") launch = true;
 		else if (value === "--shutdown") shutdown = true;
-		else if (value === "--verbose" || value === "-v") verbose = true;
+		else if (value === "--verbose") verbose = true;
 		else positional.push(value);
 	}
 
@@ -815,7 +815,7 @@ function splitNameWarningLines(lineageNames: LineageNameRecord[], sessionFile: s
 		"Lineage split naming:",
 		`- This lineage has ${forks.length} recorded fork${forks.length === 1 ? "" : "s"}${diverges ? `, including ${diverges} explicit diverge/branch edge${diverges === 1 ? "" : "s"}` : ""}; the current branch is sharing pinned lineage name ${name} from an ancestor/root.`,
 		"- Give this branch its own pinned name if it is now separate work:",
-		`  /move-lineage --name ${suggested}`,
+		`  /lineage-name ${suggested}`,
 	];
 }
 
@@ -915,7 +915,7 @@ function lineageSummary(records: RelocationRecord[], sessionFile?: string): stri
 		`Forks from current chain: ${forks.length}`,
 		...formatLeaf("Newest descendant leaf", newestLeaf),
 		...formatLeaf("Longest-lineage descendant leaf", longestLeaf),
-		...(recoverableLeaves.length ? ["Recoverable leaves are hidden from normal resume suggestions; use --files/status details for raw paths."] : []),
+		...(recoverableLeaves.length ? ["Recoverable leaves are hidden from normal resume suggestions; use /session-lineage --files for raw paths."] : []),
 		...threadResumeLines(sessionFile),
 		...(descendants.length ? [`Restart latest script: ${restartCommand()}`] : []),
 	];
@@ -1076,7 +1076,7 @@ export default function (pi: ExtensionAPI) {
 
 			const original = await readFile(sessionFile, "utf8").catch((error) => {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-					throw new Error(["Current Pi session file is missing; cannot relocate this live process.", "", `Missing: ${sessionFile}`, "", "Try /session, /move-lineage --files, or start a fresh Pi session in the target directory."].join("\n"));
+					throw new Error(["Current Pi session file is missing; cannot relocate this live process.", "", `Missing: ${sessionFile}`, "", "Try /session, /session-lineage --files, or start a fresh Pi session in the target directory."].join("\n"));
 				}
 				throw error;
 			});
@@ -1167,8 +1167,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("move-prune", {
 		description: "Safely move superseded relocation source session files to Trash. Use --dry-run first.",
 		handler: async (args, ctx) => {
-			const dryRun = hasFlag(args, "--dry-run") || hasFlag(args, "-n");
-			const force = hasFlag(args, "--force") || hasFlag(args, "-f");
+			const dryRun = hasFlag(args, "--dry-run");
+			const force = hasFlag(args, "--force");
 			const stage = hasFlag(args, "--stage");
 			const duplicates = hasFlag(args, "--duplicates");
 			let candidates = await classifyPruneCandidates(ctx.sessionManager?.getSessionFile?.());
@@ -1221,138 +1221,35 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("move-status", {
-		description: "Show compact relocation status. Use --all for full details.",
+	pi.registerCommand("lineage-name", {
+		description: "Pin a durable name for the current session lineage branch.",
 		handler: async (args, ctx) => {
-			const showAll = hasFlag(args, "--all");
+			const name = parseWords(args).join(" ").trim();
+			if (!name) {
+				ctx.ui.notify("Usage: /lineage-name <name>", "error");
+				return;
+			}
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const records = await readManifest();
-			const lineageNames = await readLineageNames();
-			const discovered = await findRelocatedSessions();
-			const byDestination = new Map(records.map((record) => [record.destinationSession, record]));
-			const currentIndex = findCurrentIndex(records, sessionFile);
-			const currentLineage = buildLineage(records, currentIndex);
-			const root = lineageRoot(currentLineage, sessionFile);
-			await autoPinLineageNameFromSession(ctx, lineageNames, root, sessionFile);
-			const currentName = latestLineageName(lineageNames, root, sessionFile);
-			const forks = forkRecords(records, currentLineage);
-			const unrecorded = discovered.filter((path) => !byDestination.has(path));
-			const currentSessionId = ctx.sessionManager.getSessionId();
-			const lines = [
-				"Session move status",
-				"",
-				`Current cwd: ${shortPath(ctx.cwd)}`,
-				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
-				`Current session id: ${currentSessionId}`,
-				`Pinned lineage name: ${currentName?.name ?? "(unnamed)"}`,
-				`Current session tracked: ${currentIndex >= 0 ? `yes (#${currentIndex + 1})` : "no"}`,
-				...movedWarningLines(sessionFile),
-				`Manifest records: ${records.length}`,
-				`Manifest inputs: ${manifestFiles().map(shortPath).join(", ")}`,
-				`Lineage inputs: ${lineageNamesFiles().map(shortPath).join(", ")}`,
-				`Restart scripts: ${shortPath(relocationScriptsDir())}`,
-				`Legacy restart scripts: ${shortPath(legacyRelocationScriptsDir())}`,
-				`Current lineage hops: ${currentLineage.length}`,
-				`Forks from current lineage: ${forks.length}`,
-				`Unrecorded relocated files: ${unrecorded.length}`,
-			];
-
-			lines.push("", "Latest relocations:");
-			const recent = records.slice(-5);
-			if (recent.length) {
-				for (const [offset, record] of recent.entries()) {
-					const n = records.length - recent.length + offset + 1;
-					lines.push(...formatHop(record, n, sessionFile, false));
-				}
-			} else {
-				lines.push("(none)");
-			}
-
-			if (forks.length) {
-				lines.push("", "Forks touching current lineage:");
-				for (const [index, record] of forks.slice(-5).entries()) lines.push(...formatHop(record, index + 1, sessionFile, false));
-			}
-			lines.push(...splitNameWarningLines(lineageNames, sessionFile, forks, currentName, ctx.cwd));
-
-			if (showAll) {
-				lines.push("", "All recorded relocations:");
-				for (const [index, record] of records.entries()) lines.push(...formatHop(record, index + 1, sessionFile, true));
-
-				if (unrecorded.length) {
-					lines.push("", "Discovered relocated sessions not in manifest:");
-					for (const path of unrecorded) lines.push(`- ${shortPath(path)}`);
-				}
-			} else {
-				lines.push("", "Use /move-lineage for the current chain; /move-status --all for full details.");
-			}
-
-			ctx.ui.notify(lines.join("\n"), "info");
-		},
-	});
-
-	pi.registerCommand("move-lineage", {
-		description: "Show or name the current session move ancestry chain. Use --name <name>; --files includes session paths.",
-		handler: async (args, ctx) => {
-			const words = parseWords(args);
-			const showFiles = words.includes("--files");
-			const nameFlag = words.indexOf("--name");
-			const name = nameFlag >= 0 ? words.slice(nameFlag + 1).filter((word) => !word.startsWith("--")).join(" ").trim() : undefined;
-			const sessionFile = ctx.sessionManager.getSessionFile();
-			const records = await readManifest();
-			const lineageNames = await readLineageNames();
 			const currentIndex = findCurrentIndex(records, sessionFile);
 			const lineage = buildLineage(records, currentIndex);
 			const root = lineageRoot(lineage, sessionFile);
-			if (!name) await autoPinLineageNameFromSession(ctx, lineageNames, root, sessionFile);
-			if (name) {
-				if (!root) {
-					ctx.ui.notify("Cannot name an ephemeral lineage with no session file.", "error");
-					return;
-				}
-				const now = new Date().toISOString();
-				await appendLineageName({ type: "lineage_named", root, name, currentSession: sessionFile, sessionId: ctx.sessionManager.getSessionId(), created: now, updated: now, source: "pi-session-move" });
-				const sessionManager = ctx.sessionManager as { appendSessionInfo?: (name: string) => string };
-				const sessionNameEntry = typeof sessionManager.appendSessionInfo === "function" ? sessionManager.appendSessionInfo(name) : undefined;
-				ctx.ui.notify([
-					"Session move lineage pinned",
-					"",
-					`Pinned lineage name: ${name}`,
-					...(sessionNameEntry ? [`Pi session display name updated: ${name}`] : ["Pi session display name was not updated; this Pi version does not expose appendSessionInfo to extensions."]),
-					`Root: ${shortPath(root)}`,
-					`Metadata: ${shortPath(lineageNamesFile())}`,
-				].join("\n"), "info");
+			if (!root) {
+				ctx.ui.notify("Cannot name an ephemeral lineage with no session file.", "error");
 				return;
 			}
-			const currentName = latestLineageName(lineageNames, root, sessionFile);
-			const forks = forkRecords(records, lineage);
-			const lines = [
-				"Session move lineage",
+			const now = new Date().toISOString();
+			await appendLineageName({ type: "lineage_named", root, name, currentSession: sessionFile, sessionId: ctx.sessionManager.getSessionId(), created: now, updated: now, source: "pi-session-move" });
+			const sessionManager = ctx.sessionManager as { appendSessionInfo?: (name: string) => string };
+			const sessionNameEntry = typeof sessionManager.appendSessionInfo === "function" ? sessionManager.appendSessionInfo(name) : undefined;
+			ctx.ui.notify([
+				"Session lineage name pinned",
 				"",
-				`Current cwd: ${shortPath(ctx.cwd)}`,
-				`Current session: ${sessionFile ? shortPath(sessionFile) : "(ephemeral)"}`,
-				`Current session id: ${ctx.sessionManager.getSessionId()}`,
-				`Pinned lineage name: ${currentName?.name ?? "(unnamed)"}`,
-				...movedWarningLines(sessionFile),
-				"",
-				"Current position:",
-				...lineageSummary(records, sessionFile),
-			];
-
-			if (!sessionFile) lines.push("", "Current session is ephemeral; no lineage is available.");
-			else if (currentIndex < 0) lines.push("", "Current session is not recorded as a relocation destination.");
-			else if (!lineage.length) lines.push("", "No lineage records found for current session.");
-			else {
-				lines.push("", "Current chain:");
-				for (const [index, record] of lineage.entries()) lines.push(...formatHop(record, index + 1, sessionFile, showFiles));
-			}
-
-			if (forks.length) {
-				lines.push("", "Forks from this chain:");
-				for (const [index, record] of forks.entries()) lines.push(...formatHop(record, index + 1, sessionFile, showFiles));
-			}
-			lines.push(...splitNameWarningLines(lineageNames, sessionFile, forks, currentName, ctx.cwd));
-
-			ctx.ui.notify(lines.join("\n"), "info");
+				`Pinned lineage name: ${name}`,
+				...(sessionNameEntry ? [`Pi session display name updated: ${name}`] : ["Pi session display name was not updated; this Pi version does not expose appendSessionInfo to extensions."]),
+				`Root: ${shortPath(root)}`,
+				`Metadata: ${shortPath(lineageNamesFile())}`,
+			].join("\n"), "info");
 		},
 	});
 }
