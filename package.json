@@ -27,5 +27,15 @@
 		"lineages": "tsx scripts/list-lineage-resume.ts",
 		"migrate-paths": "tsx scripts/migrate-session-move-paths.ts",
 		"migrate-paths:move": "tsx scripts/migrate-session-move-paths.ts --move"
-	}
+	},
+	"bin": {
+		"pi-session-lineages": "./bin/pi-session-lineages.js"
+	},
+	"files": [
+		"index.ts",
+		"README.md",
+		"bin",
+		"scripts",
+		"tsconfig.json"
+	]
 }
