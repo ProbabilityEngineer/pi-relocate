@@ -151,21 +151,25 @@ Lineage names are pinned metadata about the chain/family, not raw proof of ident
 
 When Pi exposes session naming APIs, `/lineage-name` also appends the pinned lineage name to the current session display info so the durable lineage label and Pi's current-session display name stay synced. If no pinned lineage name exists, session moves may auto-pin a usable current Pi session display name; when a lineage branches, use `/lineage-name <branch-name>` to pin the branch-specific name.
 
-## Legacy evidence copy
+## Legacy evidence migration
 
-Legacy files are not rewritten or deleted. To copy old top-level move evidence into a tidy namespace for archival review, run:
+Legacy files are not rewritten or deleted by default. To copy old top-level move evidence into a tidy namespace for archival review, run:
 
 ```bash
 npm run migrate-paths
 ```
 
-This copies legacy manifests, backups, and restart scripts into:
+After review, you can move the legacy files instead of leaving originals in place:
+
+```bash
+npm run migrate-paths:move
+```
+
+Move mode removes each source file only after the destination exists and its checksum matches. Both modes write checksums and operation statuses to `migration-manifest.jsonl` under:
 
 ```text
 ~/.pi/agent/session-move/legacy/
 ```
-
-and writes checksums to `migration-manifest.jsonl`.
 
 ## Boundaries
 
