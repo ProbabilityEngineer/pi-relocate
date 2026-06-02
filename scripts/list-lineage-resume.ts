@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+import { readdir, readFile, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+
+const home = process.env.HOME ?? ".";
+const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
+
+type RelocationRecord = { ts?: string; sourceSession?: string; destinationSession?: string; parent?: string; fromCwd?: string; toCwd?: string };
+type LineageNameRecord = { type?: string; root?: string; name?: string; currentSession?: string; updated?: string };
+type SessionInfo = { path: string; messages: number; mtimeMs: number; cwd?: string };
+
+async function readJsonl<T>(path: string): Promise<T[]> {
+	try {
+		return (await readFile(path, "utf8")).split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line) as T);
+	} catch {
+		return [];
+	}
+}
+
+function uniq<T>(items: T[]): T[] {
+	return [...new Set(items)];
+}
+
+function shortPath(path: string | undefined): string {
+	if (!path) return "";
+	return path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+}
+
+function cwdFromSessionBucket(path: string): string | undefined {
+	const bucket = basename(dirname(path));
+	const match = bucket.match(/^--(.+)--$/);
+	return match ? `/${match[1].replace(/-/g, "/")}` : undefined;
+}
+
+function formatAge(ms: number): string {
+	const delta = Math.max(0, Date.now() - ms);
+	const minute = 60_000;
+	const hour = 60 * minute;
+	const day = 24 * hour;
+	if (delta < hour) return `${Math.max(1, Math.round(delta / minute))}m`;
+	if (delta < day) return `${Math.round(delta / hour)}h`;
+	return `${Math.round(delta / day)}d`;
+}
+
+async function lineCount(path: string): Promise<number> {
+	try {
+		return (await readFile(path, "utf8")).split(/\r?\n/).filter((line) => line.trim()).length;
+	} catch {
+		return 0;
+	}
+}
+
+async function sessionInfo(path: string, cwdBySession: Map<string, string>): Promise<SessionInfo | undefined> {
+	try {
+		const st = await stat(path);
+		if (!st.isFile()) return undefined;
+		return { path, messages: await lineCount(path), mtimeMs: st.mtimeMs, cwd: cwdBySession.get(path) ?? cwdFromSessionBucket(path) };
+	} catch {
+		return undefined;
+	}
+}
+
+function descendants(root: string, records: RelocationRecord[]): string[] {
+	const out = new Set<string>([root]);
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const record of records) {
+			const source = record.sourceSession ?? record.parent;
+			const dest = record.destinationSession;
+			if (source && dest && out.has(source) && !out.has(dest)) {
+				out.add(dest);
+				changed = true;
+			}
+		}
+	}
+	return [...out];
+}
+
+async function main() {
+	const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
+	const limit = limitArg ? Number(limitArg.slice("--limit=".length)) : undefined;
+	const relocationFiles = [
+		join(agentDir, "relocations.jsonl"),
+		join(agentDir, "session-move", "manifests", "relocations.jsonl"),
+	];
+	const nameFiles = [
+		join(agentDir, "relocation-lineages.jsonl"),
+		join(agentDir, "session-move", "manifests", "relocation-lineages.jsonl"),
+	];
+	const records = (await Promise.all(relocationFiles.map((path) => readJsonl<RelocationRecord>(path)))).flat();
+	const names = (await Promise.all(nameFiles.map((path) => readJsonl<LineageNameRecord>(path)))).flat()
+		.filter((record) => record.type === "lineage_named" && record.root && record.name)
+		.sort((a, b) => String(a.updated ?? "").localeCompare(String(b.updated ?? "")));
+	const latestByName = new Map<string, LineageNameRecord>();
+	for (const name of names) latestByName.set(name.name!, name);
+	const cwdBySession = new Map<string, string>();
+	for (const record of records) {
+		if (record.sourceSession && record.fromCwd) cwdBySession.set(record.sourceSession, record.fromCwd);
+		if (record.destinationSession && record.toCwd) cwdBySession.set(record.destinationSession, record.toCwd);
+	}
+	const rows: { name: string; best: SessionInfo; count: number }[] = [];
+	for (const lineage of latestByName.values()) {
+		const anchor = lineage.currentSession ?? lineage.root!;
+		const paths = uniq([...descendants(anchor, records), anchor].filter(Boolean));
+		const infos = (await Promise.all(paths.map((path) => sessionInfo(path, cwdBySession)))).filter(Boolean) as SessionInfo[];
+		const best = infos.sort((a, b) => b.messages - a.messages || b.mtimeMs - a.mtimeMs)[0];
+		if (best) rows.push({ name: lineage.name!, best, count: infos.length });
+	}
+	rows.sort((a, b) => b.best.messages - a.best.messages || b.best.mtimeMs - a.best.mtimeMs);
+	const selected = Number(process.argv.find((arg) => /^\d+$/.test(arg)) ?? 0);
+	if (selected > 0) {
+		const row = rows[selected - 1];
+		if (!row) throw new Error(`No lineage row ${selected}`);
+		console.log(`cd ${JSON.stringify(row.best.cwd ?? ".")}`);
+		console.log(`pi --session ${JSON.stringify(row.best.path)}`);
+		return;
+	}
+	console.log("#  Lineage                         Msgs  Age  Sessions  Cwd");
+	for (const [index, row] of rows.slice(0, limit).entries()) {
+		console.log(`${String(index + 1).padStart(2)} ${row.name.padEnd(30).slice(0, 30)} ${String(row.best.messages).padStart(5)} ${formatAge(row.best.mtimeMs).padStart(4)} ${String(row.count).padStart(8)}  ${shortPath(row.best.cwd)}`);
+		console.log(`   session: ${shortPath(row.best.path)}`);
+	}
+}
+
+main().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); });

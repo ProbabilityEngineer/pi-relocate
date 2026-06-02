@@ -24,6 +24,7 @@
 		"tsx": "^4.22.4"
 	},
 	"scripts": {
+		"lineages": "tsx scripts/list-lineage-resume.ts",
 		"migrate-paths": "tsx scripts/migrate-session-move-paths.ts",
 		"migrate-paths:move": "tsx scripts/migrate-session-move-paths.ts --move"
 	}

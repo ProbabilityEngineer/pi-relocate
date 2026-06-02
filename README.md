@@ -151,6 +151,18 @@ Lineage names are pinned metadata about the chain/family, not raw proof of ident
 
 When Pi exposes session naming APIs, `/lineage-name` also appends the pinned lineage name to the current session display info so the durable lineage label and Pi's current-session display name stay synced. If no pinned lineage name exists, session moves may auto-pin a usable current Pi session display name; when a lineage branches, use `/lineage-name <branch-name>` to pin the branch-specific name.
 
+List the highest-message surviving session for each named lineage with:
+
+```bash
+npm run lineages
+```
+
+The output shows one row per lineage with message count, age, session count, resume cwd, and session path. To print the shell commands for a row:
+
+```bash
+npm run lineages -- 1
+```
+
 ## Legacy evidence migration
 
 Legacy files are not rewritten or deleted by default. To copy old top-level move evidence into a tidy namespace for archival review, run:
