@@ -82,7 +82,8 @@ function nearestName(path, parentBySession, nameByAnchor) {
 }
 async function main() {
     const args = process.argv.slice(2);
-    const showFiles = args.includes("--files") || args.includes("--verbose");
+    const showFiles = args.includes("--files");
+    const verbose = args.includes("--verbose");
     const printOnly = args.includes("--print") || args.includes("--command");
     const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
     const limit = limitArg ? Number(limitArg.slice("--limit=".length)) : undefined;
@@ -180,6 +181,8 @@ async function main() {
     console.log("#  Lineage                         Msgs  Age  Cwd");
     for (const [index, row] of rows.slice(0, limit).entries()) {
         console.log(`${String(index + 1).padStart(2)} ${row.name.padEnd(30).slice(0, 30)} ${String(row.totalMessages).padStart(5)} ${formatAge(row.best.mtimeMs).padStart(4)}  ${shortPath(row.best.cwd)}`);
+        if (verbose)
+            console.log(`   repo: ${shortPath(row.best.cwd)}`);
         if (showFiles)
             console.log(`   session: ${shortPath(row.best.path)}`);
     }
