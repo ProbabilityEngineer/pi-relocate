@@ -10,13 +10,25 @@ const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
 
 type RelocationRecord = { ts?: string; sourceSession?: string; destinationSession?: string; parent?: string; fromCwd?: string; toCwd?: string };
 type LineageNameRecord = { type?: string; root?: string; name?: string; currentSession?: string; updated?: string };
+type StoreExport = { sessionObservations?: StoreObservation[]; labels?: StoreLabel[] };
+type StoreObservation = { sessionId: string; path: string; lineCount?: number; fileMtime?: string; metadata?: { cwd?: string; displayName?: string } };
+type StoreLabel = { targetType?: string; targetId?: string; labelType?: string; value?: string; confidence?: string };
 type ResumeSessionInfo = { path: string; messages: number; mtimeMs: number; cwd?: string };
+type LineageRow = { name: string; best: ResumeSessionInfo; count: number; totalMessages: number };
 
 async function readJsonl<T>(path: string): Promise<T[]> {
 	try {
 		return (await readFile(path, "utf8")).split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line) as T);
 	} catch {
 		return [];
+	}
+}
+
+async function readJson<T>(path: string): Promise<T | undefined> {
+	try {
+		return JSON.parse(await readFile(path, "utf8")) as T;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -111,18 +123,66 @@ async function main() {
 		if (record.destinationSession && record.toCwd) cwdBySession.set(record.destinationSession, record.toCwd);
 		if (record.destinationSession) parentBySession.set(record.destinationSession, record.sourceSession ?? record.parent ?? "");
 	}
+	const store = await readJson<StoreExport>(join(agentDir, "session-store", "session-store.export.json"));
+	const storeNameByPath = new Map<string, string>();
+	const storeSessionIdByPath = new Map<string, string>();
+	for (const observation of store?.sessionObservations ?? []) {
+		storeSessionIdByPath.set(observation.path, observation.sessionId);
+		if (observation.metadata?.cwd) cwdBySession.set(observation.path, observation.metadata.cwd);
+		if (observation.metadata?.displayName) storeNameByPath.set(observation.path, observation.metadata.displayName);
+	}
+	const labelsBySession = new Map<string, StoreLabel[]>();
+	for (const label of store?.labels ?? []) {
+		if (label.targetType !== "session" || !label.targetId) continue;
+		const list = labelsBySession.get(label.targetId) ?? [];
+		list.push(label);
+		labelsBySession.set(label.targetId, list);
+	}
+	for (const [path, sessionId] of storeSessionIdByPath) {
+		const labels = labelsBySession.get(sessionId) ?? [];
+		const cwd = labels.find((label) => label.labelType === "cwd" && label.confidence === "authoritative")?.value ?? labels.find((label) => label.labelType === "cwd")?.value;
+		const displayName = labels.find((label) => label.labelType === "display_name" && label.confidence === "authoritative")?.value ?? labels.find((label) => label.labelType === "display_name")?.value;
+		if (cwd) cwdBySession.set(path, cwd);
+		if (displayName) storeNameByPath.set(path, displayName);
+	}
 	const piSessions = await SessionManager.listAll();
 	const piSessionByPath = new Map(piSessions.map((session) => [session.path, toResumeSessionInfo(session, cwdBySession)]));
-	const rows: { name: string; best: ResumeSessionInfo; count: number }[] = [];
+	for (const observation of store?.sessionObservations ?? []) {
+		const mtimeMs = Date.parse(observation.fileMtime ?? "");
+		const existing = piSessionByPath.get(observation.path);
+		const info: ResumeSessionInfo = {
+			path: observation.path,
+			messages: Math.max(existing?.messages ?? 0, observation.lineCount ?? 0),
+			mtimeMs: Number.isFinite(mtimeMs) ? Math.max(existing?.mtimeMs ?? 0, mtimeMs) : existing?.mtimeMs ?? 0,
+			cwd: cwdBySession.get(observation.path) ?? existing?.cwd,
+		};
+		piSessionByPath.set(observation.path, info);
+	}
+	const rows: LineageRow[] = [];
 	for (const lineage of latestByName.values()) {
 		const anchor = lineage.currentSession ?? lineage.root!;
-		const paths = uniq([...descendants(anchor, records), anchor].filter(Boolean))
-			.filter((path) => nearestName(path, parentBySession, nameByAnchor) === lineage.name);
+		const storeNamedPaths = [...storeNameByPath.entries()].filter(([, name]) => name === lineage.name).map(([path]) => path);
+		const paths = uniq([...descendants(anchor, records), anchor, ...storeNamedPaths].filter(Boolean))
+			.filter((path) => storeNameByPath.get(path) === lineage.name || nearestName(path, parentBySession, nameByAnchor) === lineage.name);
 		const infos = paths.map((path) => piSessionByPath.get(path)).filter(Boolean) as ResumeSessionInfo[];
-		const best = infos.sort((a, b) => b.messages - a.messages || b.mtimeMs - a.mtimeMs)[0];
-		if (best) rows.push({ name: lineage.name!, best, count: infos.length });
+		const byCwd = new Map<string, ResumeSessionInfo[]>();
+		for (const info of infos) {
+			const key = info.cwd ?? "";
+			const list = byCwd.get(key) ?? [];
+			list.push(info);
+			byCwd.set(key, list);
+		}
+		const groups = [...byCwd.values()].map((group) => ({
+			infos: group,
+			totalMessages: group.reduce((sum, info) => sum + info.messages, 0),
+			latestMtimeMs: Math.max(...group.map((info) => info.mtimeMs)),
+		}));
+		const topGroup = groups.sort((a, b) => b.totalMessages - a.totalMessages || b.latestMtimeMs - a.latestMtimeMs)[0];
+		if (!topGroup) continue;
+		const best = topGroup.infos.sort((a, b) => b.mtimeMs - a.mtimeMs || b.messages - a.messages)[0];
+		if (best) rows.push({ name: lineage.name!, best, count: infos.length, totalMessages: topGroup.totalMessages });
 	}
-	rows.sort((a, b) => b.best.messages - a.best.messages || b.best.mtimeMs - a.best.mtimeMs);
+	rows.sort((a, b) => b.totalMessages - a.totalMessages || b.best.mtimeMs - a.best.mtimeMs);
 	const selected = Number(args.find((arg) => /^\d+$/.test(arg)) ?? 0);
 	if (selected > 0) {
 		const row = rows[selected - 1];
@@ -133,7 +193,7 @@ async function main() {
 	}
 	console.log("#  Lineage                         Msgs  Age  Cwd");
 	for (const [index, row] of rows.slice(0, limit).entries()) {
-		console.log(`${String(index + 1).padStart(2)} ${row.name.padEnd(30).slice(0, 30)} ${String(row.best.messages).padStart(5)} ${formatAge(row.best.mtimeMs).padStart(4)}  ${shortPath(row.best.cwd)}`);
+		console.log(`${String(index + 1).padStart(2)} ${row.name.padEnd(30).slice(0, 30)} ${String(row.totalMessages).padStart(5)} ${formatAge(row.best.mtimeMs).padStart(4)}  ${shortPath(row.best.cwd)}`);
 		if (showFiles) console.log(`   session: ${shortPath(row.best.path)}`);
 	}
 	if (process.stdin.isTTY && process.stdout.isTTY) {
