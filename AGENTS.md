@@ -38,6 +38,11 @@
 - If `jj new --no-edit` creates an empty child but leaves `@` on the completed change, switch to the empty child with `jj edit <empty-child>` before moving `main`.
 - For off-machine backup or publishing, prefer `/jj-align-push [branch]` after `@` is empty and `@-` is the completed change.
 
+## Turnlog
+
+- When you attempt to use turnlog for meaningful repository work and the target repo is not initialized, initialize it rather than abandoning the record.
+- Keep `.turnlog/` out of GitHub by default unless the repo explicitly opts into tracking it.
+
 ## Saguaro
 
 - Use Saguaro only when explicitly requested or when a repo-local `AGENTS.md` requires it.
