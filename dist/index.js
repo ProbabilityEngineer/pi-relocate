@@ -938,9 +938,11 @@ async function buildStatusOutput(ctx, showAll = false) {
         ...movedWarningLines(sessionFile),
         `Manifest records: ${records.length}`,
         `Manifest inputs: ${manifestFiles().map(shortPath).join(", ")}`,
+        `Deprecated legacy manifest input: ${shortPath(legacyManifestFile())}`,
         `Lineage inputs: ${lineageNamesFiles().map(shortPath).join(", ")}`,
+        `Deprecated legacy lineage input: ${shortPath(legacyLineageNamesFile())}`,
         `Restart scripts: ${shortPath(relocationScriptsDir())}`,
-        `Legacy restart scripts: ${shortPath(legacyRelocationScriptsDir())}`,
+        `Deprecated legacy restart scripts: ${shortPath(legacyRelocationScriptsDir())}`,
         `Current lineage hops: ${currentLineage.length}`,
         `Forks from current lineage: ${forks.length}`,
         `Unrecorded relocated files: ${unrecorded.length}`,
@@ -1011,7 +1013,7 @@ export default function (pi) {
         },
     });
     pi.registerCommand("move", {
-        description: "Move this session to another cwd by replacing old path strings; restart Pi there with pi -c. Records lineage in relocations.jsonl. No LLM call. Use --verbose for file/script details.",
+        description: "Move this session to another cwd by replacing old path strings; restart Pi there with pi -c. Records lineage in ~/.pi/agent/session-move/manifests/relocations.jsonl. Deprecated legacy manifest paths remain readable for compatibility. No LLM call. Use --verbose for file/script details.",
         handler: async (args, ctx) => {
             const { target, force, diverge, launch, shutdown, verbose } = parseArgs(args);
             if (!target) {

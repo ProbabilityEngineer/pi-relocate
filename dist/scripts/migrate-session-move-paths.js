@@ -4,8 +4,8 @@ import { copyFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "nod
 import { dirname, join, relative } from "node:path";
 const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
-const legacyRoot = join(agentDir, "session-move", "legacy");
-const manifestPath = join(legacyRoot, "migration-manifest.jsonl");
+const sessionMoveRoot = join(agentDir, "session-move");
+const manifestPath = join(sessionMoveRoot, "migration-manifest.jsonl");
 async function exists(path) { try {
     await stat(path);
     return true;
@@ -64,21 +64,24 @@ function migrationMode(args) {
 async function main() {
     const mode = migrationMode(process.argv.slice(2));
     const copies = [];
-    copies.push([join(agentDir, "relocations.jsonl"), join(legacyRoot, "manifests", "relocations.jsonl")]);
-    copies.push([join(agentDir, "relocation-lineages.jsonl"), join(legacyRoot, "manifests", "relocation-lineages.jsonl")]);
+    copies.push([join(agentDir, "relocations.jsonl"), join(sessionMoveRoot, "manifests", "relocations.jsonl")]);
+    copies.push([join(agentDir, "relocation-lineages.jsonl"), join(sessionMoveRoot, "manifests", "relocation-lineages.jsonl")]);
     for (const entry of await readdir(agentDir, { withFileTypes: true }).catch(() => [])) {
         if (entry.isFile() && /^relocations\.backup\..*\.jsonl$/.test(entry.name))
-            copies.push([join(agentDir, entry.name), join(legacyRoot, "manifests", "backups", entry.name)]);
+            copies.push([join(agentDir, entry.name), join(sessionMoveRoot, "manifests", "backups", entry.name)]);
     }
-    for (const script of await walkFiles(join(agentDir, "relocations")))
-        copies.push([script, join(legacyRoot, "restart-scripts", relative(join(agentDir, "relocations"), script))]);
+    for (const script of await walkFiles(join(agentDir, "relocations"))) {
+        if (script === join(agentDir, "relocations", "latest.sh"))
+            continue;
+        copies.push([script, join(sessionMoveRoot, "restart-scripts", relative(join(agentDir, "relocations"), script))]);
+    }
     const records = [];
     for (const [source, dest] of copies) {
         const record = await copyEvidence(source, dest, mode);
         if (record)
             records.push(record);
     }
-    await mkdir(legacyRoot, { recursive: true });
+    await mkdir(sessionMoveRoot, { recursive: true });
     if (records.length)
         await writeFile(manifestPath, records.map((record) => JSON.stringify(record)).join("\n") + "\n", { encoding: "utf8", flag: "a" });
     const verb = mode === "move" ? "Moved or verified" : "Copied or verified";

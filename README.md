@@ -141,7 +141,7 @@ New session-move manifest:
 ~/.pi/agent/session-move/manifests/relocations.jsonl
 ```
 
-Legacy manifest still read for compatibility:
+Deprecated legacy manifest still read for compatibility:
 
 ```text
 ~/.pi/agent/relocations.jsonl
@@ -153,7 +153,7 @@ Lineage names are written to:
 ~/.pi/agent/session-move/manifests/relocation-lineages.jsonl
 ```
 
-Legacy lineage names are still read from:
+Deprecated legacy lineage file is still read for compatibility:
 
 ```text
 ~/.pi/agent/relocation-lineages.jsonl
@@ -249,22 +249,29 @@ Options:
 
 ## Legacy evidence migration
 
-Legacy files are not rewritten or deleted by default. To copy old top-level move evidence into a tidy namespace for archival review, run:
+Deprecated legacy files are not rewritten or deleted by default. To copy old top-level move evidence into the canonical `session-move` namespace, run:
 
 ```bash
 npm run migrate-paths
 ```
 
-After review, you can move the legacy files instead of leaving originals in place:
+After review, you can move the deprecated legacy files instead of leaving originals in place:
 
 ```bash
 npm run migrate-paths:move
 ```
 
-Move mode removes each source file only after the destination exists and its checksum matches. Both modes write checksums and operation statuses to `migration-manifest.jsonl` under:
+This migrates:
+
+- `~/.pi/agent/relocations.jsonl` -> `~/.pi/agent/session-move/manifests/relocations.jsonl`
+- `~/.pi/agent/relocation-lineages.jsonl` -> `~/.pi/agent/session-move/manifests/relocation-lineages.jsonl`
+- `~/.pi/agent/relocations/**` -> `~/.pi/agent/session-move/restart-scripts/**`
+- except `~/.pi/agent/relocations/latest.sh`, which is skipped so the current canonical `latest.sh` remains authoritative
+
+Move mode removes each source file only after the destination exists and its checksum matches. Both modes write checksums and operation statuses to:
 
 ```text
-~/.pi/agent/session-move/legacy/
+~/.pi/agent/session-move/migration-manifest.jsonl
 ```
 
 ## Boundaries
