@@ -7,6 +7,16 @@ import { SessionManager, type SessionInfo as PiSessionInfo } from "@earendil-wor
 
 const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
+const version = await readVersion();
+
+async function readVersion(): Promise<string> {
+	for (const url of [new URL("../package.json", import.meta.url), new URL("../../package.json", import.meta.url)]) {
+		try {
+			return (JSON.parse(await readFile(url, "utf8")) as { version?: string }).version ?? "0.0.0";
+		} catch {}
+	}
+	return "0.0.0";
+}
 
 type RelocationRecord = { ts?: string; sourceSession?: string; destinationSession?: string; parent?: string; fromCwd?: string; toCwd?: string };
 type LineageNameRecord = { type?: string; root?: string; name?: string; currentSession?: string; updated?: string };
@@ -94,8 +104,29 @@ function nearestName(path: string, parentBySession: Map<string, string>, nameByA
 	return undefined;
 }
 
+function usage(): string {
+	return [
+		"Usage: pil [options] [lineage-number]",
+		"",
+		"Options:",
+		"  --files             Show session file paths",
+		"  --print, --command  Print the resume command instead of launching Pi",
+		"  --limit=<n>         Limit displayed rows",
+		"  -h, --help          Show this help",
+		"  -V, --version       Show version",
+	].join("\n");
+}
+
 async function main() {
 	const args = process.argv.slice(2);
+	if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
+		console.log(usage());
+		return;
+	}
+	if (args.includes("--version") || args.includes("-V") || args[0] === "version") {
+		console.log(version);
+		return;
+	}
 	const showFiles = args.includes("--files");
 	const printOnly = args.includes("--print") || args.includes("--command");
 	const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));

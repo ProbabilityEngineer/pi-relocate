@@ -211,6 +211,14 @@ List the highest-message surviving session for each named lineage with:
 pil
 ```
 
+Show CLI help or version with:
+
+```bash
+pil --help
+pil --version
+# or: pil -V
+```
+
 From the source checkout, the equivalent npm script is:
 
 ```bash
@@ -224,6 +232,19 @@ To print shell commands instead of launching Pi:
 ```bash
 pil --print 1
 # or: npm run lineages -- --print 1
+```
+
+`pil --help` shows:
+
+```text
+Usage: pil [options] [lineage-number]
+
+Options:
+  --files             Show session file paths
+  --print, --command  Print the resume command instead of launching Pi
+  --limit=<n>         Limit displayed rows
+  -h, --help          Show this help
+  -V, --version       Show version
 ```
 
 ## Legacy evidence migration

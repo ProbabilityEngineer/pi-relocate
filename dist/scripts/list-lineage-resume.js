@@ -6,6 +6,16 @@ import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
+const version = await readVersion();
+async function readVersion() {
+    for (const url of [new URL("../package.json", import.meta.url), new URL("../../package.json", import.meta.url)]) {
+        try {
+            return JSON.parse(await readFile(url, "utf8")).version ?? "0.0.0";
+        }
+        catch { }
+    }
+    return "0.0.0";
+}
 async function readJsonl(path) {
     try {
         return (await readFile(path, "utf8")).split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
@@ -80,8 +90,28 @@ function nearestName(path, parentBySession, nameByAnchor) {
     }
     return undefined;
 }
+function usage() {
+    return [
+        "Usage: pil [options] [lineage-number]",
+        "",
+        "Options:",
+        "  --files             Show session file paths",
+        "  --print, --command  Print the resume command instead of launching Pi",
+        "  --limit=<n>         Limit displayed rows",
+        "  -h, --help          Show this help",
+        "  -V, --version       Show version",
+    ].join("\n");
+}
 async function main() {
     const args = process.argv.slice(2);
+    if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
+        console.log(usage());
+        return;
+    }
+    if (args.includes("--version") || args.includes("-V") || args[0] === "version") {
+        console.log(version);
+        return;
+    }
     const showFiles = args.includes("--files");
     const printOnly = args.includes("--print") || args.includes("--command");
     const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
